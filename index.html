@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CasaBalance — Control de Gastos Familiar</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.3/Recharts.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e8eaed;--muted:#6b7280;--accent:#2dd4bf;--accent2:#818cf8;--accent3:#f472b6;--input:#22252f;--danger:#f87171;--success:#4ade80}
+body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+input,select,button{font-family:inherit}
+table{width:100%;border-collapse:separate;border-spacing:0 4px;font-size:13px}
+th{text-align:left;padding:8px 12px;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:1px}
+td{padding:10px 12px}
+::-webkit-scrollbar{height:6px;width:6px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo} = React;
+const {LineChart,Line,BarChart,Bar,XAxis,YAxis,Tooltip,Legend,ResponsiveContainer,PieChart,Pie,Cell} = Recharts;
+
+const MONTHS=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const PAYMENT_METHODS=["Efectivo","Tarjeta","Transferencia"];
+const DEFAULT_RUBROS=["Alquiler","Supermercado","Servicios","Transporte","Salud","Educación","Entretenimiento","Ropa","Restaurantes","Otros"];
+const DEFAULT_MEMBERS=["Miembro 1"];
+const COLORS=["#2dd4bf","#f472b6","#818cf8","#fb923c","#facc15","#4ade80","#f87171","#38bdf8","#c084fc","#a3e635","#e879f9","#fbbf24"];
+
+const uid=()=>Math.random().toString(36).slice(2,9);
+const fmt=n=>new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS",maximumFractionDigits:0}).format(n);
+const todayStr=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`};
+const monthKey=d=>d.slice(0,7);
+const monthLabel=mk=>{const[y,m]=mk.split("-");return`${MONTHS[parseInt(m)-1]} ${y}`};
+const now=new Date();
+const currentMK=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+
+function Modal({open,onClose,title,children}){
+  if(!open)return null;
+  return React.createElement("div",{onClick:onClose,style:{position:"fixed",inset:0,zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.55)",backdropFilter:"blur(4px)"}},
+    React.createElement("div",{onClick:e=>e.stopPropagation(),style:{background:"var(--card)",borderRadius:16,padding:28,minWidth:340,maxWidth:520,width:"90%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 25px 60px rgba(0,0,0,0.4)",border:"1px solid var(--border)"}},
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <h3 style={{margin:0,fontSize:18,color:"var(--text)"}}>{title}</h3>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"var(--muted)",fontSize:22,cursor:"pointer",padding:4}}>✕</button>
+      </div>,
+      children
+    )
+  );
+}
+
+function EditBtn({onClick,label}){
+  return <button onClick={onClick} title={label||"Editar"} style={{background:"none",border:"1px solid var(--border)",borderRadius:6,color:"var(--accent)",cursor:"pointer",padding:"3px 8px",fontSize:13,display:"inline-flex",alignItems:"center",gap:4}}
+    onMouseEnter={e=>{e.target.style.background="var(--accent)";e.target.style.color="#fff";e.target.style.borderColor="var(--accent)"}}
+    onMouseLeave={e=>{e.target.style.background="none";e.target.style.color="var(--accent)";e.target.style.borderColor="var(--border)"}}
+  >✎ {label||""}</button>;
+}
+
+function DeleteBtn({onClick}){
+  return <button onClick={onClick} title="Eliminar" style={{background:"none",border:"1px solid var(--border)",borderRadius:6,color:"#f87171",cursor:"pointer",padding:"3px 8px",fontSize:13}}
+    onMouseEnter={e=>{e.target.style.background="#f87171";e.target.style.color="#fff";e.target.style.borderColor="#f87171"}}
+    onMouseLeave={e=>{e.target.style.background="none";e.target.style.color="#f87171";e.target.style.borderColor="var(--border)"}}
+  >✕</button>;
+}
+
+function SelectInput({value,onChange,options,placeholder,style={}}){
+  return <select value={value} onChange={e=>onChange(e.target.value)} style={{padding:"9px 12px",borderRadius:8,border:"1px solid var(--border)",background:"var(--input)",color:"var(--text)",fontSize:14,...style}}>
+    {placeholder && <option value="">{placeholder}</option>}
+    {options.map(o=><option key={o} value={o}>{o}</option>)}
+  </select>;
+}
+
+function TextInput({value,onChange,placeholder,type="text",style={},min}){
+  return <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} min={min}
+    style={{padding:"9px 12px",borderRadius:8,border:"1px solid var(--border)",background:"var(--input)",color:"var(--text)",fontSize:14,width:"100%",boxSizing:"border-box",...style}}/>;
+}
+
+function PrimaryBtn({onClick,children,disabled,style={}}){
+  return <button onClick={onClick} disabled={disabled} style={{background:disabled?"var(--muted)":"var(--accent)",color:"#fff",border:"none",borderRadius:8,padding:"10px 20px",fontSize:14,fontWeight:600,cursor:disabled?"not-allowed":"pointer",...style}}>{children}</button>;
+}
+
+function SecondaryBtn({onClick,children,style={}}){
+  return <button onClick={onClick} style={{background:"transparent",color:"var(--accent)",border:"1px solid var(--accent)",borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:600,cursor:"pointer",...style}}>{children}</button>;
+}
+
+function Card({children,style={}}){
+  return <div style={{background:"var(--card)",borderRadius:14,padding:20,border:"1px solid var(--border)",boxShadow:"0 2px 12px rgba(0,0,0,0.08)",...style}}>{children}</div>;
+}
+
+function StatCard({label,value,sub,color}){
+  return <Card style={{flex:"1 1 200px",minWidth:170}}>
+    <div style={{fontSize:12,color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>{label}</div>
+    <div style={{fontSize:24,fontWeight:700,color:color||"var(--text)"}}>{value}</div>
+    {sub && <div style={{fontSize:12,color:"var(--muted)",marginTop:4}}>{sub}</div>}
+  </Card>;
+}
+
+function Tabs({tabs,active,onChange}){
+  return <div style={{display:"flex",gap:4,background:"var(--bg)",borderRadius:10,padding:3,marginBottom:20,flexWrap:"wrap"}}>
+    {tabs.map(t=><button key={t} onClick={()=>onChange(t)} style={{padding:"8px 18px",borderRadius:8,border:"none",background:active===t?"var(--accent)":"transparent",color:active===t?"#fff":"var(--muted)",fontSize:13,fontWeight:600,cursor:"pointer"}}>{t}</button>)}
+  </div>;
+}
+
+function App(){
+  const[rubros,setRubros]=useState(()=>{try{return JSON.parse(localStorage.getItem("hg_rubros"))||DEFAULT_RUBROS}catch{return DEFAULT_RUBROS}});
+  const[members,setMembers]=useState(()=>{try{return JSON.parse(localStorage.getItem("hg_members"))||DEFAULT_MEMBERS}catch{return DEFAULT_MEMBERS}});
+  const[gastos,setGastos]=useState(()=>{try{return JSON.parse(localStorage.getItem("hg_gastos"))||[]}catch{return[]}});
+  const[ingresos,setIngresos]=useState(()=>{try{return JSON.parse(localStorage.getItem("hg_ingresos"))||[]}catch{return[]}});
+  const[tab,setTab]=useState("Dashboard");
+  const[selMonth,setSelMonth]=useState(currentMK);
+
+  const[showGasto,setShowGasto]=useState(false);
+  const[showIngreso,setShowIngreso]=useState(false);
+  const[showRubros,setShowRubros]=useState(false);
+  const[showMembers,setShowMembers]=useState(false);
+  const[editGasto,setEditGasto]=useState(null);
+  const[editIngreso,setEditIngreso]=useState(null);
+
+  const[gDesc,setGDesc]=useState("");
+  const[gMonto,setGMonto]=useState("");
+  const[gRubro,setGRubro]=useState("");
+  const[gMetodo,setGMetodo]=useState("Efectivo");
+  const[gCuotas,setGCuotas]=useState("1");
+  const[gFecha,setGFecha]=useState(todayStr());
+
+  const[iDesc,setIDesc]=useState("");
+  const[iMonto,setIMonto]=useState("");
+  const[iMember,setIMember]=useState("");
+  const[iFecha,setIFecha]=useState(todayStr());
+
+  useEffect(()=>{localStorage.setItem("hg_rubros",JSON.stringify(rubros))},[rubros]);
+  useEffect(()=>{localStorage.setItem("hg_members",JSON.stringify(members))},[members]);
+  useEffect(()=>{localStorage.setItem("hg_gastos",JSON.stringify(gastos))},[gastos]);
+  useEffect(()=>{localStorage.setItem("hg_ingresos",JSON.stringify(ingresos))},[ingresos]);
+
+  const gastosExpandidos=useMemo(()=>{
+    const all=[];
+    gastos.forEach(g=>{
+      const cuotas=parseInt(g.cuotas)||1;
+      const montoCuota=g.monto/cuotas;
+      for(let i=0;i<cuotas;i++){
+        const d=new Date(g.fecha+"T12:00:00");
+        d.setMonth(d.getMonth()+i);
+        const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+        all.push({...g,monto:montoCuota,mes:mk,cuotaNum:i+1,cuotasTotal:cuotas,esOriginal:i===0});
+      }
+    });
+    return all;
+  },[gastos]);
+
+  const gastosMes=useMemo(()=>gastosExpandidos.filter(g=>g.mes===selMonth),[gastosExpandidos,selMonth]);
+  const ingresosMes=useMemo(()=>ingresos.filter(i=>monthKey(i.fecha)===selMonth),[ingresos,selMonth]);
+
+  const totalGastosMes=gastosMes.reduce((s,g)=>s+g.monto,0);
+  const totalIngresosMes=ingresosMes.reduce((s,i)=>s+i.monto,0);
+  const balanceMes=totalIngresosMes-totalGastosMes;
+
+  const gastosPorRubro=useMemo(()=>{
+    const map={};
+    gastosMes.forEach(g=>{map[g.rubro]=(map[g.rubro]||0)+g.monto});
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  },[gastosMes]);
+
+  const gastosPorMetodo=useMemo(()=>{
+    const map={};
+    gastosMes.forEach(g=>{map[g.metodo]=(map[g.metodo]||0)+g.monto});
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  },[gastosMes]);
+
+  const evolucion=useMemo(()=>{
+    const months=[];
+    for(let i=11;i>=0;i--){
+      const d=new Date();d.setMonth(d.getMonth()-i);
+      const mk=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      const ing=ingresos.filter(x=>monthKey(x.fecha)===mk).reduce((s,x)=>s+x.monto,0);
+      const gas=gastosExpandidos.filter(x=>x.mes===mk).reduce((s,x)=>s+x.monto,0);
+      months.push({mes:monthLabel(mk),ingresos:ing,gastos:gas,balance:ing-gas});
+    }
+    return months;
+  },[gastosExpandidos,ingresos]);
+
+  const availableMonths=useMemo(()=>{
+    const set=new Set();
+    set.add(currentMK);
+    gastos.forEach(g=>{
+      const cuotas=parseInt(g.cuotas)||1;
+      for(let i=0;i<cuotas;i++){
+        const d=new Date(g.fecha+"T12:00:00");d.setMonth(d.getMonth()+i);
+        set.add(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);
+      }
+    });
+    ingresos.forEach(i=>set.add(monthKey(i.fecha)));
+    return[...set].sort().reverse();
+  },[gastos,ingresos]);
+
+  const resetGastoForm=()=>{setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGCuotas("1");setGFecha(todayStr());setEditGasto(null)};
+  const resetIngresoForm=()=>{setIDesc("");setIMonto("");setIMember("");setIFecha(todayStr());setEditIngreso(null)};
+
+  const openAddGasto=()=>{resetGastoForm();setShowGasto(true)};
+  const openEditGasto=g=>{setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGCuotas(String(g.cuotas));setGFecha(g.fecha);setShowGasto(true)};
+  const saveGasto=()=>{
+    if(!gDesc||!gMonto||!gRubro)return;
+    const obj={id:editGasto?editGasto.id:uid(),desc:gDesc,monto:parseFloat(gMonto),rubro:gRubro,metodo:gMetodo,cuotas:gMetodo==="Tarjeta"?parseInt(gCuotas)||1:1,fecha:gFecha};
+    if(editGasto){setGastos(prev=>prev.map(g=>g.id===editGasto.id?obj:g))}
+    else{setGastos(prev=>[...prev,obj])}
+    setShowGasto(false);resetGastoForm();
+  };
+  const deleteGasto=id=>setGastos(prev=>prev.filter(g=>g.id!==id));
+
+  const openAddIngreso=()=>{resetIngresoForm();setShowIngreso(true)};
+  const openEditIngreso=i=>{setEditIngreso(i);setIDesc(i.desc);setIMonto(String(i.monto));setIMember(i.member);setIFecha(i.fecha);setShowIngreso(true)};
+  const saveIngreso=()=>{
+    if(!iDesc||!iMonto||!iMember)return;
+    const obj={id:editIngreso?editIngreso.id:uid(),desc:iDesc,monto:parseFloat(iMonto),member:iMember,fecha:iFecha};
+    if(editIngreso){setIngresos(prev=>prev.map(i=>i.id===editIngreso.id?obj:i))}
+    else{setIngresos(prev=>[...prev,obj])}
+    setShowIngreso(false);resetIngresoForm();
+  };
+  const deleteIngreso=id=>setIngresos(prev=>prev.filter(i=>i.id!==id));
+
+  const[newRubro,setNewRubro]=useState("");
+  const addRubro=()=>{if(newRubro.trim()&&!rubros.includes(newRubro.trim())){setRubros(p=>[...p,newRubro.trim()]);setNewRubro("")}};
+  const removeRubro=r=>setRubros(p=>p.filter(x=>x!==r));
+
+  const[newMember,setNewMember]=useState("");
+  const addMember=()=>{if(newMember.trim()&&!members.includes(newMember.trim())){setMembers(p=>[...p,newMember.trim()]);setNewMember("")}};
+  const removeMember=m=>setMembers(p=>p.filter(x=>x!==m));
+
+  const ingresosPorMiembro=useMemo(()=>{
+    const map={};
+    ingresosMes.forEach(i=>{map[i.member]=(map[i.member]||0)+i.monto});
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  },[ingresosMes]);
+
+  const tooltipStyle={contentStyle:{background:"var(--card)",border:"1px solid var(--border)",borderRadius:10,fontSize:13,color:"var(--text)"},itemStyle:{color:"var(--text)"}};
+
+  return (
+    <div>
+      {/* HEADER */}
+      <div style={{background:"linear-gradient(135deg,#1a1d27 0%,#0f1117 100%)",borderBottom:"1px solid var(--border)",padding:"16px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:38,height:38,borderRadius:10,background:"linear-gradient(135deg,var(--accent),var(--accent2))",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>💰</div>
+          <div>
+            <div style={{fontFamily:"'Space Mono',monospace",fontSize:18,fontWeight:700,letterSpacing:-0.5}}>CasaBalance</div>
+            <div style={{fontSize:11,color:"var(--muted)"}}>Control de gastos familiar</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <SecondaryBtn onClick={()=>setShowRubros(true)}>✎ Rubros</SecondaryBtn>
+          <SecondaryBtn onClick={()=>setShowMembers(true)}>✎ Miembros</SecondaryBtn>
+        </div>
+      </div>
+
+      {/* MONTH + TABS */}
+      <div style={{padding:"16px 24px 0"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+          <span style={{fontSize:13,color:"var(--muted)"}}>Período:</span>
+          <SelectInput value={selMonth} onChange={setSelMonth} options={availableMonths} style={{minWidth:140}}/>
+          <span style={{fontSize:20,fontWeight:700,marginLeft:8}}>{monthLabel(selMonth)}</span>
+        </div>
+        <Tabs tabs={["Dashboard","Gastos","Ingresos"]} active={tab} onChange={setTab}/>
+      </div>
+
+      <div style={{padding:"0 24px 40px"}}>
+
+      {/* DASHBOARD */}
+      {tab==="Dashboard" && <>
+        <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+          <StatCard label="Ingresos" value={fmt(totalIngresosMes)} color="var(--success)"/>
+          <StatCard label="Gastos" value={fmt(totalGastosMes)} color="var(--danger)"/>
+          <StatCard label="Balance" value={fmt(balanceMes)} color={balanceMes>=0?"var(--success)":"var(--danger)"} sub={balanceMes>=0?"Superávit":"Déficit"}/>
+          <StatCard label="Nº Gastos" value={gastosMes.length} sub={`en ${monthLabel(selMonth)}`}/>
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(340px,1fr))",gap:14,marginBottom:20}}>
+          <Card>
+            <h4 style={{margin:"0 0 12px",fontSize:14,color:"var(--muted)"}}>Gastos por Rubro</h4>
+            {gastosPorRubro.length===0?<div style={{color:"var(--muted)",fontSize:13,padding:20,textAlign:"center"}}>Sin datos</div>:
+            <ResponsiveContainer width="100%" height={250}>
+              <PieChart>
+                <Pie data={gastosPorRubro.map(([name,value])=>({name,value}))} cx="50%" cy="50%" outerRadius={90} innerRadius={50} dataKey="value" paddingAngle={2} label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} style={{fontSize:11}}>
+                  {gastosPorRubro.map((_,i)=><Cell key={i} fill={COLORS[i%COLORS.length]}/>)}
+                </Pie>
+                <Tooltip formatter={v=>fmt(v)} {...tooltipStyle}/>
+              </PieChart>
+            </ResponsiveContainer>}
+          </Card>
+
+          <Card>
+            <h4 style={{margin:"0 0 12px",fontSize:14,color:"var(--muted)"}}>Gastos por Medio de Pago</h4>
+            {gastosPorMetodo.length===0?<div style={{color:"var(--muted)",fontSize:13,padding:20,textAlign:"center"}}>Sin datos</div>:
+            <ResponsiveContainer width="100%" height={250}>
+              <PieChart>
+                <Pie data={gastosPorMetodo.map(([name,value])=>({name,value}))} cx="50%" cy="50%" outerRadius={90} innerRadius={50} dataKey="value" paddingAngle={2} label={({name,percent})=>`${name} ${(percent*100).toFixed(0)}%`} style={{fontSize:11}}>
+                  {gastosPorMetodo.map((_,i)=><Cell key={i} fill={["#2dd4bf","#818cf8","#f472b6"][i]||COLORS[i]}/>)}
+                </Pie>
+                <Tooltip formatter={v=>fmt(v)} {...tooltipStyle}/>
+              </PieChart>
+            </ResponsiveContainer>}
+          </Card>
+        </div>
+
+        <Card style={{marginBottom:20}}>
+          <h4 style={{margin:"0 0 12px",fontSize:14,color:"var(--muted)"}}>Evolución Mensual — Ingresos vs Gastos (12 meses)</h4>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={evolucion} barGap={2}>
+              <XAxis dataKey="mes" tick={{fill:"var(--muted)",fontSize:11}} axisLine={{stroke:"var(--border)"}} tickLine={false}/>
+              <YAxis tick={{fill:"var(--muted)",fontSize:11}} axisLine={{stroke:"var(--border)"}} tickLine={false} tickFormatter={v=>v>=1000?`${(v/1000).toFixed(0)}k`:v}/>
+              <Tooltip formatter={v=>fmt(v)} {...tooltipStyle}/>
+              <Legend wrapperStyle={{fontSize:12}}/>
+              <Bar dataKey="ingresos" name="Ingresos" fill="#4ade80" radius={[4,4,0,0]}/>
+              <Bar dataKey="gastos" name="Gastos" fill="#f87171" radius={[4,4,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <Card style={{marginBottom:20}}>
+          <h4 style={{margin:"0 0 12px",fontSize:14,color:"var(--muted)"}}>Balance Mensual</h4>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={evolucion}>
+              <XAxis dataKey="mes" tick={{fill:"var(--muted)",fontSize:11}} axisLine={{stroke:"var(--border)"}} tickLine={false}/>
+              <YAxis tick={{fill:"var(--muted)",fontSize:11}} axisLine={{stroke:"var(--border)"}} tickLine={false} tickFormatter={v=>v>=1000?`${(v/1000).toFixed(0)}k`:v}/>
+              <Tooltip formatter={v=>fmt(v)} {...tooltipStyle}/>
+              <Line type="monotone" dataKey="balance" name="Balance" stroke="var(--accent)" strokeWidth={2.5} dot={{r:4,fill:"var(--accent)"}}/>
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {ingresosPorMiembro.length>0 && <Card>
+          <h4 style={{margin:"0 0 12px",fontSize:14,color:"var(--muted)"}}>Aportes por Miembro — {monthLabel(selMonth)}</h4>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {ingresosPorMiembro.map(([m,v])=>{
+              const pct=totalIngresosMes>0?(v/totalIngresosMes*100):0;
+              return <div key={m}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:13,marginBottom:4}}><span>{m}</span><span style={{fontWeight:600}}>{fmt(v)} ({pct.toFixed(0)}%)</span></div>
+                <div style={{height:8,borderRadius:4,background:"var(--border)",overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:"var(--success)",borderRadius:4,transition:"width .5s"}}/>
+                </div>
+              </div>;
+            })}
+          </div>
+        </Card>}
+      </>}
+
+      {/* GASTOS */}
+      {tab==="Gastos" && <>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+          <h3 style={{margin:0,fontSize:16}}>Gastos — {monthLabel(selMonth)}</h3>
+          <PrimaryBtn onClick={openAddGasto}>+ Nuevo Gasto</PrimaryBtn>
+        </div>
+
+        {gastosMes.length===0?<Card><div style={{textAlign:"center",color:"var(--muted)",padding:30}}>No hay gastos registrados para este mes.</div></Card>:
+        <div style={{overflowX:"auto"}}>
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Descripción</th><th>Rubro</th><th>Medio</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Cuota</th><th style={{textAlign:"center"}}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {gastosMes.map((g,i)=><tr key={g.id+"-"+g.cuotaNum} style={{background:i%2===0?"var(--card)":"transparent"}}>
+                <td style={{borderRadius:"8px 0 0 8px"}}>{g.fecha?.slice(0,10)}</td>
+                <td>{g.desc}</td>
+                <td><span style={{background:"var(--bg)",padding:"3px 10px",borderRadius:20,fontSize:12}}>{g.rubro}</span></td>
+                <td><span style={{color:g.metodo==="Tarjeta"?"var(--accent2)":g.metodo==="Transferencia"?"var(--accent)":"var(--accent3)",fontWeight:600}}>{g.metodo}</span></td>
+                <td style={{textAlign:"right",fontWeight:600}}>{fmt(g.monto)}</td>
+                <td style={{textAlign:"center"}}>{g.cuotasTotal>1?`${g.cuotaNum}/${g.cuotasTotal}`:"—"}</td>
+                <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                  {g.esOriginal!==false && <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                    <EditBtn onClick={()=>openEditGasto(gastos.find(x=>x.id===g.id))}/>
+                    <DeleteBtn onClick={()=>deleteGasto(g.id)}/>
+                  </div>}
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+
+        <Card style={{marginTop:16}}>
+          <h4 style={{margin:"0 0 10px",fontSize:14,color:"var(--muted)"}}>Resumen del mes</h4>
+          <div style={{display:"flex",gap:24,flexWrap:"wrap",fontSize:14}}>
+            <div><span style={{color:"var(--muted)"}}>Total: </span><strong style={{color:"var(--danger)"}}>{fmt(totalGastosMes)}</strong></div>
+            <div><span style={{color:"var(--muted)"}}>Operaciones: </span><strong>{gastosMes.length}</strong></div>
+          </div>
+        </Card>
+      </>}
+
+      {/* INGRESOS */}
+      {tab==="Ingresos" && <>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+          <h3 style={{margin:0,fontSize:16}}>Ingresos — {monthLabel(selMonth)}</h3>
+          <PrimaryBtn onClick={openAddIngreso}>+ Nuevo Ingreso</PrimaryBtn>
+        </div>
+
+        {ingresosMes.length===0?<Card><div style={{textAlign:"center",color:"var(--muted)",padding:30}}>No hay ingresos registrados para este mes.</div></Card>:
+        <div style={{overflowX:"auto"}}>
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Descripción</th><th>Miembro</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ingresosMes.map((ing,i)=><tr key={ing.id} style={{background:i%2===0?"var(--card)":"transparent"}}>
+                <td style={{borderRadius:"8px 0 0 8px"}}>{ing.fecha}</td>
+                <td>{ing.desc}</td>
+                <td><span style={{background:"var(--bg)",padding:"3px 10px",borderRadius:20,fontSize:12}}>{ing.member}</span></td>
+                <td style={{textAlign:"right",fontWeight:600,color:"var(--success)"}}>{fmt(ing.monto)}</td>
+                <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                  <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                    <EditBtn onClick={()=>openEditIngreso(ing)}/>
+                    <DeleteBtn onClick={()=>deleteIngreso(ing.id)}/>
+                  </div>
+                </td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+
+        <Card style={{marginTop:16}}>
+          <h4 style={{margin:"0 0 10px",fontSize:14,color:"var(--muted)"}}>Resumen del mes</h4>
+          <div style={{display:"flex",gap:24,flexWrap:"wrap",fontSize:14}}>
+            <div><span style={{color:"var(--muted)"}}>Total ingresos: </span><strong style={{color:"var(--success)"}}>{fmt(totalIngresosMes)}</strong></div>
+            <div><span style={{color:"var(--muted)"}}>Aportes: </span><strong>{ingresosMes.length}</strong></div>
+          </div>
+        </Card>
+      </>}
+
+      </div>
+
+      {/* MODALS */}
+      <Modal open={showGasto} onClose={()=>{setShowGasto(false);resetGastoForm()}} title={editGasto?"Editar Gasto":"Nuevo Gasto"}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Descripción</label><TextInput value={gDesc} onChange={setGDesc} placeholder="Ej: Compra supermercado"/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Monto total ($)</label><TextInput type="number" value={gMonto} onChange={setGMonto} placeholder="0" min="0"/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Rubro</label><SelectInput value={gRubro} onChange={setGRubro} options={rubros} placeholder="Seleccionar rubro" style={{width:"100%"}}/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Medio de pago</label><SelectInput value={gMetodo} onChange={v=>{setGMetodo(v);if(v!=="Tarjeta")setGCuotas("1")}} options={PAYMENT_METHODS} style={{width:"100%"}}/></div>
+          {gMetodo==="Tarjeta" && <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Cuotas</label><TextInput type="number" value={gCuotas} onChange={setGCuotas} min="1" placeholder="1"/>{parseInt(gCuotas)>1 && gMonto && <div style={{fontSize:12,color:"var(--accent)",marginTop:4}}>Cuota mensual: {fmt(parseFloat(gMonto)/parseInt(gCuotas))}</div>}</div>}
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={gFecha} onChange={setGFecha}/></div>
+          <PrimaryBtn onClick={saveGasto} disabled={!gDesc||!gMonto||!gRubro} style={{marginTop:8}}>{editGasto?"Guardar cambios":"Registrar gasto"}</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showIngreso} onClose={()=>{setShowIngreso(false);resetIngresoForm()}} title={editIngreso?"Editar Ingreso":"Nuevo Ingreso"}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Descripción</label><TextInput value={iDesc} onChange={setIDesc} placeholder="Ej: Sueldo mayo"/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Monto ($)</label><TextInput type="number" value={iMonto} onChange={setIMonto} placeholder="0" min="0"/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Miembro</label><SelectInput value={iMember} onChange={setIMember} options={members} placeholder="Seleccionar miembro" style={{width:"100%"}}/></div>
+          <div><label style={{fontSize:12,color:"var(--muted)",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={iFecha} onChange={setIFecha}/></div>
+          <PrimaryBtn onClick={saveIngreso} disabled={!iDesc||!iMonto||!iMember} style={{marginTop:8}}>{editIngreso?"Guardar cambios":"Registrar ingreso"}</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showRubros} onClose={()=>setShowRubros(false)} title="Editar Rubros">
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+          {rubros.map(r=><div key={r} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"var(--bg)",borderRadius:8}}>
+            <span style={{fontSize:14}}>{r}</span>
+            <DeleteBtn onClick={()=>removeRubro(r)}/>
+          </div>)}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <TextInput value={newRubro} onChange={setNewRubro} placeholder="Nuevo rubro..." style={{flex:1}}/>
+          <PrimaryBtn onClick={addRubro} disabled={!newRubro.trim()}>Agregar</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showMembers} onClose={()=>setShowMembers(false)} title="Editar Miembros">
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+          {members.map(m=><div key={m} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"var(--bg)",borderRadius:8}}>
+            <span style={{fontSize:14}}>{m}</span>
+            <DeleteBtn onClick={()=>removeMember(m)}/>
+          </div>)}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <TextInput value={newMember} onChange={setNewMember} placeholder="Nuevo miembro..." style={{flex:1}}/>
+          <PrimaryBtn onClick={addMember} disabled={!newMember.trim()}>Agregar</PrimaryBtn>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
