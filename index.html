@@ -146,8 +146,12 @@ function Tabs(props){
 }
 
 function App(){
-  var[rubros,setRubros]=useState(DEFAULT_RUBROS);
-  var[members,setMembers]=useState(DEFAULT_MEMBERS);
+  var[rubros,setRubros]=useState(function(){
+    try{var r=JSON.parse(localStorage.getItem("cb_rubros"));return(r&&r.length)?r:DEFAULT_RUBROS;}catch(e){return DEFAULT_RUBROS;}
+  });
+  var[members,setMembers]=useState(function(){
+    try{var m=JSON.parse(localStorage.getItem("cb_members"));return(m&&m.length)?m:DEFAULT_MEMBERS;}catch(e){return DEFAULT_MEMBERS;}
+  });
   var[gastos,setGastos]=useState([]);
   var[ingresos,setIngresos]=useState([]);
   var[ahorros,setAhorros]=useState([]);
@@ -205,8 +209,14 @@ function App(){
     var unsubConfig = db.collection("casabalance").doc("config").onSnapshot(function(doc){
       if(doc.exists){
         var data=doc.data();
-        if(data.rubros) setRubros(data.rubros);
-        if(data.members) setMembers(data.members);
+        if(data.rubros&&data.rubros.length){
+          setRubros(data.rubros);
+          try{localStorage.setItem("cb_rubros",JSON.stringify(data.rubros));}catch(e){}
+        }
+        if(data.members&&data.members.length){
+          setMembers(data.members);
+          try{localStorage.setItem("cb_members",JSON.stringify(data.members));}catch(e){}
+        }
       }
       setFbReady(true);
     }, function(err){
@@ -245,12 +255,20 @@ function App(){
     return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD()};
   },[]);
 
-  // Save config to Firestore
+  // Save config to Firestore + localStorage
   var saveConfig = function(newRubros, newMembers){
-    db.collection("casabalance").doc("config").set({
-      rubros: newRubros || rubros,
-      members: newMembers || members
-    },{merge:true}).catch(function(e){console.error("Error saving config:",e)});
+    var update={};
+    if(newRubros!=null){
+      update.rubros=newRubros;
+      try{localStorage.setItem("cb_rubros",JSON.stringify(newRubros));}catch(e){}
+    }
+    if(newMembers!=null){
+      update.members=newMembers;
+      try{localStorage.setItem("cb_members",JSON.stringify(newMembers));}catch(e){}
+    }
+    if(Object.keys(update).length>0){
+      db.collection("casabalance").doc("config").set(update,{merge:true}).catch(function(e){console.error("Error saving config:",e)});
+    }
   };
 
   // Gastos CRUD via Firestore
