@@ -62,9 +62,11 @@ var PAYMENT_METHODS=["Efectivo","Tarjeta","Transferencia"];
 var DEFAULT_RUBROS=["Alquiler","Supermercado","Servicios","Transporte","Salud","Educación","Entretenimiento","Ropa","Restaurantes","Otros"];
 var DEFAULT_MEMBERS=["Miembro 1"];
 var COLORS=["#2dd4bf","#f472b6","#818cf8","#fb923c","#facc15","#4ade80","#f87171","#38bdf8","#c084fc","#a3e635","#e879f9","#fbbf24"];
+var UBICACIONES=["Banco","Caja de Seguridad"];
 
 var uid=function(){return Math.random().toString(36).slice(2,9)};
 var fmt=function(n){return new Intl.NumberFormat("es-AR",{style:"currency",currency:"ARS",maximumFractionDigits:0}).format(n)};
+var fmtUSD=function(n){return "U$S "+new Intl.NumberFormat("es-AR",{minimumFractionDigits:2,maximumFractionDigits:2}).format(n)};
 var todayStr=function(){var d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")};
 var monthKey=function(d){return d.slice(0,7)};
 var monthLabel=function(mk){var p=mk.split("-");return MONTHS[parseInt(p[1])-1]+" "+p[0]};
@@ -148,6 +150,7 @@ function App(){
   var[members,setMembers]=useState(DEFAULT_MEMBERS);
   var[gastos,setGastos]=useState([]);
   var[ingresos,setIngresos]=useState([]);
+  var[ahorros,setAhorros]=useState([]);
   var[tab,setTab]=useState("Dashboard");
   var[selMonth,setSelMonth]=useState(currentMK);
   var[online,setOnline]=useState(navigator.onLine);
@@ -155,10 +158,12 @@ function App(){
 
   var[showGasto,setShowGasto]=useState(false);
   var[showIngreso,setShowIngreso]=useState(false);
+  var[showAhorro,setShowAhorro]=useState(false);
   var[showRubros,setShowRubros]=useState(false);
   var[showMembers,setShowMembers]=useState(false);
   var[editGasto,setEditGasto]=useState(null);
   var[editIngreso,setEditIngreso]=useState(null);
+  var[editAhorro,setEditAhorro]=useState(null);
 
   var[gDesc,setGDesc]=useState("");
   var[gMonto,setGMonto]=useState("");
@@ -171,6 +176,19 @@ function App(){
   var[iMonto,setIMonto]=useState("");
   var[iMember,setIMember]=useState("");
   var[iFecha,setIFecha]=useState(todayStr());
+
+  var[aDesc,setADesc]=useState("");
+  var[aMonto,setAMonto]=useState("");
+  var[aUbicacion,setAUbicacion]=useState("Banco");
+  var[aFecha,setAFecha]=useState(todayStr());
+
+  var[gastosUSD,setGastosUSD]=useState([]);
+  var[showGastoUSD,setShowGastoUSD]=useState(false);
+  var[editGastoUSD,setEditGastoUSD]=useState(null);
+  var[guDesc,setGuDesc]=useState("");
+  var[guMonto,setGuMonto]=useState("");
+  var[guRubro,setGuRubro]=useState("");
+  var[guFecha,setGuFecha]=useState(todayStr());
 
   // Online status
   useEffect(function(){
@@ -210,7 +228,21 @@ function App(){
       setIngresos(arr);
     });
 
-    return function(){unsubConfig();unsubGastos();unsubIngresos()};
+    // Ahorros USD collection
+    var unsubAhorros = db.collection("casabalance").doc("data").collection("ahorros").onSnapshot(function(snap){
+      var arr=[];
+      snap.forEach(function(d){arr.push(Object.assign({id:d.id},d.data()))});
+      setAhorros(arr);
+    });
+
+    // Gastos USD collection
+    var unsubGastosUSD = db.collection("casabalance").doc("data").collection("gastosUSD").onSnapshot(function(snap){
+      var arr=[];
+      snap.forEach(function(d){arr.push(Object.assign({id:d.id},d.data()))});
+      setGastosUSD(arr);
+    });
+
+    return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD()};
   },[]);
 
   // Save config to Firestore
@@ -259,6 +291,48 @@ function App(){
   var deleteIngreso = function(id){
     if(confirm("¿Eliminar este ingreso?")){
       db.collection("casabalance").doc("data").collection("ingresos").doc(id).delete()
+        .catch(function(e){console.error(e)});
+    }
+  };
+
+  // Ahorros USD CRUD via Firestore
+  var saveAhorro = function(){
+    if(!aDesc||!aMonto)return;
+    var obj={desc:aDesc,monto:parseFloat(aMonto),ubicacion:aUbicacion,fecha:aFecha};
+    if(editAhorro){
+      db.collection("casabalance").doc("data").collection("ahorros").doc(editAhorro.id).set(obj)
+        .catch(function(e){console.error(e)});
+    } else {
+      db.collection("casabalance").doc("data").collection("ahorros").add(obj)
+        .catch(function(e){console.error(e)});
+    }
+    setShowAhorro(false);resetAhorroForm();
+  };
+
+  var deleteAhorro = function(id){
+    if(confirm("¿Eliminar este ahorro?")){
+      db.collection("casabalance").doc("data").collection("ahorros").doc(id).delete()
+        .catch(function(e){console.error(e)});
+    }
+  };
+
+  // Gastos USD CRUD via Firestore
+  var saveGastoUSD = function(){
+    if(!guDesc||!guMonto||!guRubro)return;
+    var obj={desc:guDesc,monto:parseFloat(guMonto),rubro:guRubro,fecha:guFecha};
+    if(editGastoUSD){
+      db.collection("casabalance").doc("data").collection("gastosUSD").doc(editGastoUSD.id).set(obj)
+        .catch(function(e){console.error(e)});
+    } else {
+      db.collection("casabalance").doc("data").collection("gastosUSD").add(obj)
+        .catch(function(e){console.error(e)});
+    }
+    setShowGastoUSD(false);resetGastoUSDForm();
+  };
+
+  var deleteGastoUSD = function(id){
+    if(confirm("¿Eliminar este gasto en USD?")){
+      db.collection("casabalance").doc("data").collection("gastosUSD").doc(id).delete()
         .catch(function(e){console.error(e)});
     }
   };
@@ -326,12 +400,20 @@ function App(){
 
   var resetGastoForm=function(){setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGCuotas("1");setGFecha(todayStr());setEditGasto(null)};
   var resetIngresoForm=function(){setIDesc("");setIMonto("");setIMember("");setIFecha(todayStr());setEditIngreso(null)};
+  var resetAhorroForm=function(){setADesc("");setAMonto("");setAUbicacion("Banco");setAFecha(todayStr());setEditAhorro(null)};
+  var resetGastoUSDForm=function(){setGuDesc("");setGuMonto("");setGuRubro("");setGuFecha(todayStr());setEditGastoUSD(null)};
 
   var openAddGasto=function(){resetGastoForm();setShowGasto(true)};
   var openEditGasto=function(g){setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGCuotas(String(g.cuotas));setGFecha(g.fecha);setShowGasto(true)};
 
   var openAddIngreso=function(){resetIngresoForm();setShowIngreso(true)};
   var openEditIngreso=function(ing){setEditIngreso(ing);setIDesc(ing.desc);setIMonto(String(ing.monto));setIMember(ing.member);setIFecha(ing.fecha);setShowIngreso(true)};
+
+  var openAddAhorro=function(){resetAhorroForm();setShowAhorro(true)};
+  var openEditAhorro=function(a){setEditAhorro(a);setADesc(a.desc);setAMonto(String(a.monto));setAUbicacion(a.ubicacion||"Banco");setAFecha(a.fecha);setShowAhorro(true)};
+
+  var openAddGastoUSD=function(){resetGastoUSDForm();setShowGastoUSD(true)};
+  var openEditGastoUSD=function(g){setEditGastoUSD(g);setGuDesc(g.desc);setGuMonto(String(g.monto));setGuRubro(g.rubro);setGuFecha(g.fecha);setShowGastoUSD(true)};
 
   // Rubros
   var[newRubro,setNewRubro]=useState("");
@@ -364,6 +446,18 @@ function App(){
     setMembers(nm);
     saveConfig(null,nm);
   };
+
+  var totalAhorrosUSD=useMemo(function(){return ahorros.reduce(function(s,a){return s+a.monto},0)},[ahorros]);
+  var ahorrosBanco=useMemo(function(){return ahorros.filter(function(a){return a.ubicacion==="Banco"}).reduce(function(s,a){return s+a.monto},0)},[ahorros]);
+  var ahorrosCaja=useMemo(function(){return ahorros.filter(function(a){return a.ubicacion==="Caja de Seguridad"}).reduce(function(s,a){return s+a.monto},0)},[ahorros]);
+
+  var totalGastosUSD=useMemo(function(){return gastosUSD.reduce(function(s,g){return s+g.monto},0)},[gastosUSD]);
+  var balanceNetoUSD=totalAhorrosUSD-totalGastosUSD;
+  var gastosPorRubroUSD=useMemo(function(){
+    var map={};
+    gastosUSD.forEach(function(g){map[g.rubro]=(map[g.rubro]||0)+g.monto});
+    return Object.entries(map).sort(function(a,b){return b[1]-a[1]});
+  },[gastosUSD]);
 
   var ingresosPorMiembro=useMemo(function(){
     var map={};
@@ -401,7 +495,7 @@ function App(){
           <SelectInput value={selMonth} onChange={setSelMonth} options={availableMonths} style={{minWidth:140}}/>
           <span style={{fontSize:20,fontWeight:700,marginLeft:8}}>{monthLabel(selMonth)}</span>
         </div>
-        <Tabs tabs={["Dashboard","Gastos","Ingresos"]} active={tab} onChange={setTab}/>
+        <Tabs tabs={["Dashboard","Gastos","Ingresos","Panel USD"]} active={tab} onChange={setTab}/>
       </div>
 
       <div style={{padding:"0 24px 40px"}}>
@@ -413,6 +507,9 @@ function App(){
           <StatCard label="Gastos" value={fmt(totalGastosMes)} color="#f87171"/>
           <StatCard label="Balance" value={fmt(balanceMes)} color={balanceMes>=0?"#4ade80":"#f87171"} sub={balanceMes>=0?"Superávit":"Déficit"}/>
           <StatCard label="Nº Gastos" value={gastosMes.length} sub={"en "+monthLabel(selMonth)}/>
+          <StatCard label="Ahorros USD" value={fmtUSD(totalAhorrosUSD)} color="#facc15" sub={"Banco: "+fmtUSD(ahorrosBanco)+" · Caja: "+fmtUSD(ahorrosCaja)}/>
+          <StatCard label="Gastos USD" value={fmtUSD(totalGastosUSD)} color="#fb923c" sub={gastosUSD.length+" operaciones"}/>
+          <StatCard label="Saldo Neto USD" value={fmtUSD(balanceNetoUSD)} color={balanceNetoUSD>=0?"#4ade80":"#f87171"} sub={balanceNetoUSD>=0?"Positivo":"Negativo"}/>
         </div>
 
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:14,marginBottom:20}}>
@@ -578,6 +675,106 @@ function App(){
         </Card>
       </div>}
 
+      {/* PANEL USD */}
+      {tab==="Panel USD" && <div>
+
+        {/* Resumen rápido */}
+        <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:24}}>
+          <StatCard label="Ahorros totales" value={fmtUSD(totalAhorrosUSD)} color="#facc15" sub={"Banco "+fmtUSD(ahorrosBanco)+" · Caja "+fmtUSD(ahorrosCaja)}/>
+          <StatCard label="Gastos en USD" value={fmtUSD(totalGastosUSD)} color="#fb923c" sub={gastosUSD.length+" operaciones"}/>
+          <StatCard label="Saldo neto USD" value={fmtUSD(balanceNetoUSD)} color={balanceNetoUSD>=0?"#4ade80":"#f87171"} sub={balanceNetoUSD>=0?"Positivo":"Negativo"}/>
+        </div>
+
+        {/* SECCIÓN AHORROS */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+          <h3 style={{margin:0,fontSize:15,color:"#facc15",display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:18}}>🏦</span> Ahorros en USD
+          </h3>
+          <PrimaryBtn onClick={openAddAhorro} style={{background:"#facc15",color:"#1a1d27",padding:"8px 16px",fontSize:13}}>+ Nuevo Ahorro</PrimaryBtn>
+        </div>
+
+        {ahorros.length===0
+          ? <Card style={{marginBottom:20}}><div style={{textAlign:"center",color:"#6b7280",padding:20}}>No hay ahorros registrados aún.</div></Card>
+          : <div style={{overflowX:"auto",marginBottom:20}}>
+              <table>
+                <thead><tr>
+                  <th>Fecha</th><th>Descripción</th><th>Ubicación</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Acciones</th>
+                </tr></thead>
+                <tbody>
+                  {ahorros.slice().sort(function(a,b){return b.fecha.localeCompare(a.fecha)}).map(function(a,i){
+                    return <tr key={a.id} style={{background:i%2===0?"#1a1d27":"transparent"}}>
+                      <td style={{borderRadius:"8px 0 0 8px"}}>{(a.fecha||"").slice(0,10)}</td>
+                      <td>{a.desc}</td>
+                      <td>
+                        <span style={{background:a.ubicacion==="Banco"?"#1e3a5f":"#2d1b69",color:a.ubicacion==="Banco"?"#38bdf8":"#c084fc",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>
+                          {a.ubicacion==="Banco"?"🏦 Banco":"🔒 Caja de Seguridad"}
+                        </span>
+                      </td>
+                      <td style={{textAlign:"right",fontWeight:700,color:"#facc15",fontFamily:"'Space Mono',monospace"}}>{fmtUSD(a.monto)}</td>
+                      <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                        <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                          <EditBtn onClick={function(){openEditAhorro(a)}}/>
+                          <DeleteBtn onClick={function(){deleteAhorro(a.id)}}/>
+                        </div>
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+        }
+
+        {/* SECCIÓN GASTOS USD */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8,marginTop:8}}>
+          <h3 style={{margin:0,fontSize:15,color:"#fb923c",display:"flex",alignItems:"center",gap:8}}>
+            <span style={{fontSize:18}}>💸</span> Gastos en USD
+          </h3>
+          <PrimaryBtn onClick={openAddGastoUSD} style={{background:"#fb923c",color:"#fff",padding:"8px 16px",fontSize:13}}>+ Nuevo Gasto USD</PrimaryBtn>
+        </div>
+
+        {gastosUSD.length===0
+          ? <Card style={{marginBottom:20}}><div style={{textAlign:"center",color:"#6b7280",padding:20}}>No hay gastos en USD registrados aún.</div></Card>
+          : <div style={{overflowX:"auto",marginBottom:20}}>
+              <table>
+                <thead><tr>
+                  <th>Fecha</th><th>Descripción</th><th>Rubro</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Acciones</th>
+                </tr></thead>
+                <tbody>
+                  {gastosUSD.slice().sort(function(a,b){return b.fecha.localeCompare(a.fecha)}).map(function(g,i){
+                    return <tr key={g.id} style={{background:i%2===0?"#1a1d27":"transparent"}}>
+                      <td style={{borderRadius:"8px 0 0 8px"}}>{(g.fecha||"").slice(0,10)}</td>
+                      <td>{g.desc}</td>
+                      <td><span style={{background:"#0f1117",padding:"3px 10px",borderRadius:20,fontSize:12}}>{g.rubro}</span></td>
+                      <td style={{textAlign:"right",fontWeight:700,color:"#fb923c",fontFamily:"'Space Mono',monospace"}}>{fmtUSD(g.monto)}</td>
+                      <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                        <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                          <EditBtn onClick={function(){openEditGastoUSD(g)}}/>
+                          <DeleteBtn onClick={function(){deleteGastoUSD(g.id)}}/>
+                        </div>
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+        }
+
+        {/* Gráfico distribución gastos USD por rubro */}
+        {gastosPorRubroUSD.length>0 && <Card>
+          <h4 style={{margin:"0 0 12px",fontSize:14,color:"#6b7280"}}>Gastos USD por Rubro</h4>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <Pie data={gastosPorRubroUSD.map(function(r){return{name:r[0],value:r[1]}})} cx="50%" cy="50%" outerRadius={80} innerRadius={40} dataKey="value" paddingAngle={2}
+                label={function(p){return p.name+" "+Math.round(p.percent*100)+"%"}} style={{fontSize:11}}>
+                {gastosPorRubroUSD.map(function(_,i){return <Cell key={i} fill={COLORS[i%COLORS.length]}/>})}
+              </Pie>
+              <Tooltip formatter={function(v){return fmtUSD(v)}} {...ttStyle}/>
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>}
+
+      </div>}
+
       </div>
 
       {/* MODALS */}
@@ -617,6 +814,28 @@ function App(){
         <div style={{display:"flex",gap:8}}>
           <TextInput value={newRubro} onChange={setNewRubro} placeholder="Nuevo rubro..." style={{flex:1}}/>
           <PrimaryBtn onClick={addRubro} disabled={!newRubro.trim()}>Agregar</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showGastoUSD} onClose={function(){setShowGastoUSD(false);resetGastoUSDForm()}} title={editGastoUSD?"Editar Gasto USD":"Nuevo Gasto en USD"}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Descripción</label><TextInput value={guDesc} onChange={setGuDesc} placeholder="Ej: Cena restaurante, electrónica..."/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Monto (USD)</label><TextInput type="number" value={guMonto} onChange={setGuMonto} placeholder="0.00" min="0"/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Rubro</label><SelectInput value={guRubro} onChange={setGuRubro} options={rubros} placeholder="Seleccionar rubro" style={{width:"100%"}}/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={guFecha} onChange={setGuFecha}/></div>
+          <PrimaryBtn onClick={saveGastoUSD} disabled={!guDesc||!guMonto||!guRubro} style={{marginTop:8,background:"#fb923c"}}>{editGastoUSD?"Guardar cambios":"Registrar gasto USD"}</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showAhorro} onClose={function(){setShowAhorro(false);resetAhorroForm()}} title={editAhorro?"Editar Ahorro USD":"Nuevo Ahorro USD"}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Descripción</label><TextInput value={aDesc} onChange={setADesc} placeholder="Ej: Ahorro dólares billete"/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Monto (USD)</label><TextInput type="number" value={aMonto} onChange={setAMonto} placeholder="0.00" min="0"/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Ubicación</label>
+            <SelectInput value={aUbicacion} onChange={setAUbicacion} options={UBICACIONES} style={{width:"100%"}}/>
+          </div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={aFecha} onChange={setAFecha}/></div>
+          <PrimaryBtn onClick={saveAhorro} disabled={!aDesc||!aMonto} style={{marginTop:8,background:"#facc15",color:"#1a1d27"}}>{editAhorro?"Guardar cambios":"Registrar ahorro"}</PrimaryBtn>
         </div>
       </Modal>
 
