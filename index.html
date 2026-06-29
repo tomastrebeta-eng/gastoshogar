@@ -194,6 +194,9 @@ function App(){
   var[guRubro,setGuRubro]=useState("");
   var[guFecha,setGuFecha]=useState(todayStr());
 
+  // Limpiar filtro al cambiar de mes
+  useEffect(function(){setFiltroRubro("")},[selMonth]);
+
   // Online status
   useEffect(function(){
     var onOn=function(){setOnline(true)};
@@ -430,6 +433,8 @@ function App(){
   var openAddAhorro=function(){resetAhorroForm();setShowAhorro(true)};
   var openEditAhorro=function(a){setEditAhorro(a);setADesc(a.desc);setAMonto(String(a.monto));setAUbicacion(a.ubicacion||"Banco");setAFecha(a.fecha);setShowAhorro(true)};
 
+  var[filtroRubro,setFiltroRubro]=useState("");
+
   var openAddGastoUSD=function(){resetGastoUSDForm();setShowGastoUSD(true)};
   var openEditGastoUSD=function(g){setEditGastoUSD(g);setGuDesc(g.desc);setGuMonto(String(g.monto));setGuRubro(g.rubro);setGuFecha(g.fecha);setShowGastoUSD(true)};
 
@@ -608,48 +613,71 @@ function App(){
       </div>}
 
       {/* GASTOS */}
-      {tab==="Gastos" && <div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
-          <h3 style={{margin:0,fontSize:16}}>Gastos — {monthLabel(selMonth)}</h3>
-          <PrimaryBtn onClick={openAddGasto}>+ Nuevo Gasto</PrimaryBtn>
-        </div>
-
-        {gastosMes.length===0
-          ? <Card><div style={{textAlign:"center",color:"#6b7280",padding:30}}>No hay gastos registrados para este mes.</div></Card>
-          : <div style={{overflowX:"auto"}}>
-              <table>
-                <thead><tr>
-                  <th>Fecha</th><th>Descripción</th><th>Rubro</th><th>Medio</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Cuota</th><th style={{textAlign:"center"}}>Acciones</th>
-                </tr></thead>
-                <tbody>
-                  {gastosMes.map(function(g,i){
-                    return <tr key={g.id+"-"+g.cuotaNum} style={{background:i%2===0?"#1a1d27":"transparent"}}>
-                      <td style={{borderRadius:"8px 0 0 8px"}}>{(g.fecha||"").slice(0,10)}</td>
-                      <td>{g.desc}</td>
-                      <td><span style={{background:"#0f1117",padding:"3px 10px",borderRadius:20,fontSize:12}}>{g.rubro}</span></td>
-                      <td><span style={{color:g.metodo==="Tarjeta"?"#818cf8":g.metodo==="Transferencia"?"#2dd4bf":"#f472b6",fontWeight:600}}>{g.metodo}</span></td>
-                      <td style={{textAlign:"right",fontWeight:600}}>{fmt(g.monto)}</td>
-                      <td style={{textAlign:"center"}}>{g.cuotasTotal>1?g.cuotaNum+"/"+g.cuotasTotal:"—"}</td>
-                      <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
-                        {g.esOriginal!==false && <div style={{display:"flex",gap:4,justifyContent:"center"}}>
-                          <EditBtn onClick={function(){openEditGasto(gastos.find(function(x){return x.id===g.id}))}}/>
-                          <DeleteBtn onClick={function(){deleteGasto(g.id)}}/>
-                        </div>}
-                      </td>
-                    </tr>;
-                  })}
-                </tbody>
-              </table>
-            </div>
-        }
-        <Card style={{marginTop:16}}>
-          <h4 style={{margin:"0 0 10px",fontSize:14,color:"#6b7280"}}>Resumen del mes</h4>
-          <div style={{display:"flex",gap:24,flexWrap:"wrap",fontSize:14}}>
-            <div><span style={{color:"#6b7280"}}>Total: </span><strong style={{color:"#f87171"}}>{fmt(totalGastosMes)}</strong></div>
-            <div><span style={{color:"#6b7280"}}>Operaciones: </span><strong>{gastosMes.length}</strong></div>
+      {tab==="Gastos" && function(){
+        var rubrosEnMes=Array.from(new Set(gastosMes.map(function(g){return g.rubro}))).sort();
+        var gastosFiltrados=gastosMes
+          .filter(function(g){return !filtroRubro||g.rubro===filtroRubro})
+          .slice().sort(function(a,b){return b.fecha.localeCompare(a.fecha)});
+        var totalFiltrado=gastosFiltrados.reduce(function(s,g){return s+g.monto},0);
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+            <h3 style={{margin:0,fontSize:16}}>Gastos — {monthLabel(selMonth)}</h3>
+            <PrimaryBtn onClick={openAddGasto}>+ Nuevo Gasto</PrimaryBtn>
           </div>
-        </Card>
-      </div>}
+
+          {/* Filtro por rubro */}
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,color:"#6b7280"}}>Filtrar por rubro:</span>
+            <select value={filtroRubro} onChange={function(e){setFiltroRubro(e.target.value)}}
+              style={{padding:"8px 12px",borderRadius:8,border:"1px solid "+(filtroRubro?"#2dd4bf":"#2a2d3a"),background:"#22252f",color:filtroRubro?"#2dd4bf":"#e8eaed",fontSize:13,cursor:"pointer"}}>
+              <option value="">Todos los rubros</option>
+              {rubrosEnMes.map(function(r){return <option key={r} value={r}>{r}</option>})}
+            </select>
+            {filtroRubro && <button onClick={function(){setFiltroRubro("")}}
+              style={{padding:"7px 12px",borderRadius:8,border:"1px solid #2a2d3a",background:"none",color:"#6b7280",fontSize:13,cursor:"pointer"}}>✕ Limpiar</button>}
+            {filtroRubro && <span style={{fontSize:13,color:"#6b7280"}}>{gastosFiltrados.length} resultado{gastosFiltrados.length!==1?"s":""}</span>}
+          </div>
+
+          {gastosMes.length===0
+            ? <Card><div style={{textAlign:"center",color:"#6b7280",padding:30}}>No hay gastos registrados para este mes.</div></Card>
+            : gastosFiltrados.length===0
+              ? <Card><div style={{textAlign:"center",color:"#6b7280",padding:30}}>No hay gastos del rubro "{filtroRubro}" este mes.</div></Card>
+              : <div style={{overflowX:"auto"}}>
+                  <table>
+                    <thead><tr>
+                      <th>Fecha</th><th>Descripción</th><th>Rubro</th><th>Medio</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Cuota</th><th style={{textAlign:"center"}}>Acciones</th>
+                    </tr></thead>
+                    <tbody>
+                      {gastosFiltrados.map(function(g,i){
+                        return <tr key={g.id+"-"+g.cuotaNum} style={{background:i%2===0?"#1a1d27":"transparent"}}>
+                          <td style={{borderRadius:"8px 0 0 8px"}}>{(g.fecha||"").slice(0,10)}</td>
+                          <td>{g.desc}</td>
+                          <td><span style={{background:"#0f1117",padding:"3px 10px",borderRadius:20,fontSize:12}}>{g.rubro}</span></td>
+                          <td><span style={{color:g.metodo==="Tarjeta"?"#818cf8":g.metodo==="Transferencia"?"#2dd4bf":"#f472b6",fontWeight:600}}>{g.metodo}</span></td>
+                          <td style={{textAlign:"right",fontWeight:600}}>{fmt(g.monto)}</td>
+                          <td style={{textAlign:"center"}}>{g.cuotasTotal>1?g.cuotaNum+"/"+g.cuotasTotal:"—"}</td>
+                          <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                            {g.esOriginal!==false && <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                              <EditBtn onClick={function(){openEditGasto(gastos.find(function(x){return x.id===g.id}))}}/>
+                              <DeleteBtn onClick={function(){deleteGasto(g.id)}}/>
+                            </div>}
+                          </td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+          }
+          <Card style={{marginTop:16}}>
+            <h4 style={{margin:"0 0 10px",fontSize:14,color:"#6b7280"}}>Resumen del mes</h4>
+            <div style={{display:"flex",gap:24,flexWrap:"wrap",fontSize:14}}>
+              <div><span style={{color:"#6b7280"}}>Total{filtroRubro?" ("+filtroRubro+")":""}: </span><strong style={{color:"#f87171"}}>{fmt(totalFiltrado)}</strong></div>
+              {filtroRubro && <div><span style={{color:"#6b7280"}}>Total mes completo: </span><strong style={{color:"#f87171"}}>{fmt(totalGastosMes)}</strong></div>}
+              <div><span style={{color:"#6b7280"}}>Operaciones: </span><strong>{gastosFiltrados.length}{filtroRubro?" / "+gastosMes.length:""}</strong></div>
+            </div>
+          </Card>
+        </div>;
+      }()}
 
       {/* INGRESOS */}
       {tab==="Ingresos" && <div>
