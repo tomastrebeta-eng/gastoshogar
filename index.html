@@ -58,9 +58,10 @@ var RC = window.Recharts;
 var LineChart=RC.LineChart, Line=RC.Line, BarChart=RC.BarChart, Bar=RC.Bar, XAxis=RC.XAxis, YAxis=RC.YAxis, Tooltip=RC.Tooltip, Legend=RC.Legend, ResponsiveContainer=RC.ResponsiveContainer, PieChart=RC.PieChart, Pie=RC.Pie, Cell=RC.Cell;
 
 var MONTHS=["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-var PAYMENT_METHODS=["Efectivo","Tarjeta","Transferencia"];
+var PAYMENT_METHODS=["Efectivo","Transferencia"];
 var DEFAULT_RUBROS=["Alquiler","Supermercado","Servicios","Transporte","Salud","Educación","Entretenimiento","Ropa","Restaurantes","Otros"];
 var DEFAULT_MEMBERS=["Miembro 1"];
+var DEFAULT_TARJETAS=["Sin asignar"];
 var COLORS=["#2dd4bf","#f472b6","#818cf8","#fb923c","#facc15","#4ade80","#f87171","#38bdf8","#c084fc","#a3e635","#e879f9","#fbbf24"];
 var UBICACIONES=["Banco","Caja de Seguridad"];
 
@@ -70,6 +71,7 @@ var fmtUSD=function(n){return "U$S "+new Intl.NumberFormat("es-AR",{minimumFract
 var todayStr=function(){var d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")};
 var monthKey=function(d){return d.slice(0,7)};
 var monthLabel=function(mk){var p=mk.split("-");return MONTHS[parseInt(p[1])-1]+" "+p[0]};
+var monthsBetween=function(mkA,mkB){var pa=mkA.split("-"),pb=mkB.split("-");return (parseInt(pb[0])-parseInt(pa[0]))*12+(parseInt(pb[1])-parseInt(pa[1]))};
 var nowD=new Date();
 var currentMK=nowD.getFullYear()+"-"+String(nowD.getMonth()+1).padStart(2,"0");
 
@@ -152,9 +154,13 @@ function App(){
   var[members,setMembers]=useState(function(){
     try{var m=JSON.parse(localStorage.getItem("cb_members"));return(m&&m.length)?m:DEFAULT_MEMBERS;}catch(e){return DEFAULT_MEMBERS;}
   });
+  var[tarjetas,setTarjetas]=useState(function(){
+    try{var t=JSON.parse(localStorage.getItem("cb_tarjetas"));return(t&&t.length)?t:DEFAULT_TARJETAS;}catch(e){return DEFAULT_TARJETAS;}
+  });
   var[gastos,setGastos]=useState([]);
   var[ingresos,setIngresos]=useState([]);
   var[ahorros,setAhorros]=useState([]);
+  var[compras,setCompras]=useState([]);
   var[tab,setTab]=useState("Dashboard");
   var[selMonth,setSelMonth]=useState(currentMK);
   var[online,setOnline]=useState(navigator.onLine);
@@ -165,16 +171,25 @@ function App(){
   var[showAhorro,setShowAhorro]=useState(false);
   var[showRubros,setShowRubros]=useState(false);
   var[showMembers,setShowMembers]=useState(false);
+  var[showTarjetas,setShowTarjetas]=useState(false);
+  var[showCompra,setShowCompra]=useState(false);
   var[editGasto,setEditGasto]=useState(null);
   var[editIngreso,setEditIngreso]=useState(null);
   var[editAhorro,setEditAhorro]=useState(null);
+  var[editCompra,setEditCompra]=useState(null);
 
   var[gDesc,setGDesc]=useState("");
   var[gMonto,setGMonto]=useState("");
   var[gRubro,setGRubro]=useState("");
   var[gMetodo,setGMetodo]=useState("Efectivo");
-  var[gCuotas,setGCuotas]=useState("1");
   var[gFecha,setGFecha]=useState(todayStr());
+
+  var[cDesc,setCDesc]=useState("");
+  var[cMonto,setCMonto]=useState("");
+  var[cTarjeta,setCTarjeta]=useState("");
+  var[cCuotas,setCCuotas]=useState("1");
+  var[cFecha,setCFecha]=useState(todayStr());
+  var[selMonthTarjeta,setSelMonthTarjeta]=useState(currentMK);
 
   var[iDesc,setIDesc]=useState("");
   var[iMonto,setIMonto]=useState("");
@@ -220,6 +235,10 @@ function App(){
           setMembers(data.members);
           try{localStorage.setItem("cb_members",JSON.stringify(data.members));}catch(e){}
         }
+        if(data.tarjetas&&data.tarjetas.length){
+          setTarjetas(data.tarjetas);
+          try{localStorage.setItem("cb_tarjetas",JSON.stringify(data.tarjetas));}catch(e){}
+        }
       }
       setFbReady(true);
     }, function(err){
@@ -255,11 +274,34 @@ function App(){
       setGastosUSD(arr);
     });
 
-    return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD()};
+    // Compras con tarjeta de crédito collection
+    var unsubCompras = db.collection("casabalance").doc("data").collection("tarjetaCompras").onSnapshot(function(snap){
+      var arr=[];
+      snap.forEach(function(d){arr.push(Object.assign({id:d.id},d.data()))});
+      setCompras(arr);
+    });
+
+    return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD();unsubCompras()};
   },[]);
 
+  // Migración automática: mueve gastos cargados con método "Tarjeta" (legado) a la solapa Tarjetas
+  var migratingRef=useRef({});
+  useEffect(function(){
+    var aMigrar=gastos.filter(function(g){return g.metodo==="Tarjeta"&&!migratingRef.current[g.id]});
+    if(aMigrar.length===0)return;
+    aMigrar.forEach(function(g){migratingRef.current[g.id]=true});
+    var batch=db.batch();
+    aMigrar.forEach(function(g){
+      var newRef=db.collection("casabalance").doc("data").collection("tarjetaCompras").doc();
+      batch.set(newRef,{desc:g.desc,monto:g.monto,cuotas:parseInt(g.cuotas)||1,fecha:g.fecha,tarjeta:"Sin asignar"});
+      var oldRef=db.collection("casabalance").doc("data").collection("gastos").doc(g.id);
+      batch.delete(oldRef);
+    });
+    batch.commit().catch(function(e){console.error("Error migrando gastos con tarjeta:",e)});
+  },[gastos]);
+
   // Save config to Firestore + localStorage
-  var saveConfig = function(newRubros, newMembers){
+  var saveConfig = function(newRubros, newMembers, newTarjetas){
     var update={};
     if(newRubros!=null){
       update.rubros=newRubros;
@@ -269,6 +311,10 @@ function App(){
       update.members=newMembers;
       try{localStorage.setItem("cb_members",JSON.stringify(newMembers));}catch(e){}
     }
+    if(newTarjetas!=null){
+      update.tarjetas=newTarjetas;
+      try{localStorage.setItem("cb_tarjetas",JSON.stringify(newTarjetas));}catch(e){}
+    }
     if(Object.keys(update).length>0){
       db.collection("casabalance").doc("config").set(update,{merge:true}).catch(function(e){console.error("Error saving config:",e)});
     }
@@ -277,7 +323,7 @@ function App(){
   // Gastos CRUD via Firestore
   var saveGasto = function(){
     if(!gDesc||!gMonto||!gRubro)return;
-    var obj={desc:gDesc,monto:parseFloat(gMonto),rubro:gRubro,metodo:gMetodo,cuotas:gMetodo==="Tarjeta"?parseInt(gCuotas)||1:1,fecha:gFecha};
+    var obj={desc:gDesc,monto:parseFloat(gMonto),rubro:gRubro,metodo:gMetodo,fecha:gFecha};
     if(editGasto){
       db.collection("casabalance").doc("data").collection("gastos").doc(editGasto.id).set(obj)
         .catch(function(e){console.error(e)});
@@ -358,6 +404,27 @@ function App(){
     }
   };
 
+  // Compras con Tarjeta de Crédito CRUD via Firestore
+  var saveCompra = function(){
+    if(!cDesc||!cMonto||!cTarjeta)return;
+    var obj={desc:cDesc,monto:parseFloat(cMonto),tarjeta:cTarjeta,cuotas:parseInt(cCuotas)||1,fecha:cFecha};
+    if(editCompra){
+      db.collection("casabalance").doc("data").collection("tarjetaCompras").doc(editCompra.id).set(obj)
+        .catch(function(e){console.error(e)});
+    } else {
+      db.collection("casabalance").doc("data").collection("tarjetaCompras").add(obj)
+        .catch(function(e){console.error(e)});
+    }
+    setShowCompra(false);resetCompraForm();
+  };
+
+  var deleteCompra = function(id){
+    if(confirm("¿Eliminar esta compra con tarjeta?")){
+      db.collection("casabalance").doc("data").collection("tarjetaCompras").doc(id).delete()
+        .catch(function(e){console.error(e)});
+    }
+  };
+
   // Cuotas expansion
   var gastosExpandidos=useMemo(function(){
     var all=[];
@@ -419,13 +486,54 @@ function App(){
     return Array.from(set).sort().reverse();
   },[gastos,ingresos]);
 
-  var resetGastoForm=function(){setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGCuotas("1");setGFecha(todayStr());setEditGasto(null)};
+  // Compras con tarjeta: expansión en cuotas mensuales (solo para la solapa Tarjetas)
+  var comprasExpandidas=useMemo(function(){
+    var all=[];
+    compras.forEach(function(c){
+      var cuotas=parseInt(c.cuotas)||1;
+      var montoCuota=c.monto/cuotas;
+      for(var i=0;i<cuotas;i++){
+        var d=new Date(c.fecha+"T12:00:00");
+        d.setMonth(d.getMonth()+i);
+        var mk=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+        all.push(Object.assign({},c,{monto:montoCuota,mes:mk,cuotaNum:i+1,cuotasTotal:cuotas}));
+      }
+    });
+    return all;
+  },[compras]);
+
+  var availableMonthsTarjeta=useMemo(function(){
+    var set=new Set();set.add(currentMK);
+    comprasExpandidas.forEach(function(c){set.add(c.mes)});
+    return Array.from(set).sort();
+  },[comprasExpandidas]);
+
+  var comprasMesTarjeta=useMemo(function(){return comprasExpandidas.filter(function(c){return c.mes===selMonthTarjeta})},[comprasExpandidas,selMonthTarjeta]);
+
+  // Estado de cada compra respecto al mes actual real: cuántas cuotas ya pasaron y cuántas quedan
+  var comprasConEstado=useMemo(function(){
+    return compras.map(function(c){
+      var cuotas=parseInt(c.cuotas)||1;
+      var startMK=monthKey(c.fecha);
+      var elapsed=monthsBetween(startMK,currentMK)+1;
+      var pagadas=elapsed<1?0:Math.min(elapsed,cuotas);
+      var restantes=cuotas-pagadas;
+      var estado=elapsed<1?"Próxima":(elapsed>cuotas?"Finalizada":"En curso");
+      return Object.assign({},c,{cuotas:cuotas,montoCuota:c.monto/cuotas,pagadas:pagadas,restantes:restantes,estado:estado});
+    }).sort(function(a,b){return b.fecha.localeCompare(a.fecha)});
+  },[compras]);
+
+  var resetGastoForm=function(){setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGFecha(todayStr());setEditGasto(null)};
   var resetIngresoForm=function(){setIDesc("");setIMonto("");setIMember("");setIFecha(todayStr());setEditIngreso(null)};
   var resetAhorroForm=function(){setADesc("");setAMonto("");setAUbicacion("Banco");setAFecha(todayStr());setEditAhorro(null)};
   var resetGastoUSDForm=function(){setGuDesc("");setGuMonto("");setGuRubro("");setGuFecha(todayStr());setEditGastoUSD(null)};
+  var resetCompraForm=function(){setCDesc("");setCMonto("");setCTarjeta("");setCCuotas("1");setCFecha(todayStr());setEditCompra(null)};
 
   var openAddGasto=function(){resetGastoForm();setShowGasto(true)};
-  var openEditGasto=function(g){setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGCuotas(String(g.cuotas));setGFecha(g.fecha);setShowGasto(true)};
+  var openEditGasto=function(g){setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGFecha(g.fecha);setShowGasto(true)};
+
+  var openAddCompra=function(){resetCompraForm();setShowCompra(true)};
+  var openEditCompra=function(c){setEditCompra(c);setCDesc(c.desc);setCMonto(String(c.monto));setCTarjeta(c.tarjeta);setCCuotas(String(c.cuotas));setCFecha(c.fecha);setShowCompra(true)};
 
   var openAddIngreso=function(){resetIngresoForm();setShowIngreso(true)};
   var openEditIngreso=function(ing){setEditIngreso(ing);setIDesc(ing.desc);setIMonto(String(ing.monto));setIMember(ing.member);setIFecha(ing.fecha);setShowIngreso(true)};
@@ -468,6 +576,22 @@ function App(){
     var nm=members.filter(function(x){return x!==m});
     setMembers(nm);
     saveConfig(null,nm);
+  };
+
+  // Tarjetas de crédito
+  var[newTarjeta,setNewTarjeta]=useState("");
+  var addTarjeta=function(){
+    if(newTarjeta.trim()&&!tarjetas.includes(newTarjeta.trim())){
+      var nt=tarjetas.concat([newTarjeta.trim()]);
+      setTarjetas(nt);
+      saveConfig(null,null,nt);
+      setNewTarjeta("");
+    }
+  };
+  var removeTarjeta=function(t){
+    var nt=tarjetas.filter(function(x){return x!==t});
+    setTarjetas(nt);
+    saveConfig(null,null,nt);
   };
 
   var totalAhorrosUSD=useMemo(function(){return ahorros.reduce(function(s,a){return s+a.monto},0)},[ahorros]);
@@ -518,7 +642,7 @@ function App(){
           <SelectInput value={selMonth} onChange={setSelMonth} options={availableMonths} style={{minWidth:140}}/>
           <span style={{fontSize:20,fontWeight:700,marginLeft:8}}>{monthLabel(selMonth)}</span>
         </div>
-        <Tabs tabs={["Dashboard","Gastos","Ingresos","Panel USD"]} active={tab} onChange={setTab}/>
+        <Tabs tabs={["Dashboard","Gastos","Ingresos","Tarjetas","Panel USD"]} active={tab} onChange={setTab}/>
       </div>
 
       <div style={{padding:"0 24px 40px"}}>
@@ -645,7 +769,7 @@ function App(){
               : <div style={{overflowX:"auto"}}>
                   <table>
                     <thead><tr>
-                      <th>Fecha</th><th>Descripción</th><th>Rubro</th><th>Medio</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Cuota</th><th style={{textAlign:"center"}}>Acciones</th>
+                      <th>Fecha</th><th>Descripción</th><th>Rubro</th><th>Medio</th><th style={{textAlign:"right"}}>Monto</th><th style={{textAlign:"center"}}>Acciones</th>
                     </tr></thead>
                     <tbody>
                       {gastosFiltrados.map(function(g,i){
@@ -653,9 +777,8 @@ function App(){
                           <td style={{borderRadius:"8px 0 0 8px"}}>{(g.fecha||"").slice(0,10)}</td>
                           <td>{g.desc}</td>
                           <td><span style={{background:"#0f1117",padding:"3px 10px",borderRadius:20,fontSize:12}}>{g.rubro}</span></td>
-                          <td><span style={{color:g.metodo==="Tarjeta"?"#818cf8":g.metodo==="Transferencia"?"#2dd4bf":"#f472b6",fontWeight:600}}>{g.metodo}</span></td>
+                          <td><span style={{color:g.metodo==="Transferencia"?"#2dd4bf":"#f472b6",fontWeight:600}}>{g.metodo}</span></td>
                           <td style={{textAlign:"right",fontWeight:600}}>{fmt(g.monto)}</td>
-                          <td style={{textAlign:"center"}}>{g.cuotasTotal>1?g.cuotaNum+"/"+g.cuotasTotal:"—"}</td>
                           <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
                             {g.esOriginal!==false && <div style={{display:"flex",gap:4,justifyContent:"center"}}>
                               <EditBtn onClick={function(){openEditGasto(gastos.find(function(x){return x.id===g.id}))}}/>
@@ -720,6 +843,116 @@ function App(){
           </div>
         </Card>
       </div>}
+
+      {/* TARJETAS */}
+      {tab==="Tarjetas" && function(){
+        var comprasFiltradas=comprasMesTarjeta.slice().sort(function(a,b){return b.fecha.localeCompare(a.fecha)});
+        var totalMesTarjeta=comprasFiltradas.reduce(function(s,c){return s+c.monto},0);
+        var porTarjetaMap={};
+        comprasFiltradas.forEach(function(c){porTarjetaMap[c.tarjeta]=(porTarjetaMap[c.tarjeta]||0)+c.monto});
+        var porTarjetaArr=Object.entries(porTarjetaMap).sort(function(a,b){return b[1]-a[1]});
+        var comprasActivas=comprasConEstado.filter(function(c){return c.estado!=="Finalizada"});
+
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
+            <h3 style={{margin:0,fontSize:16,color:"#818cf8",display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18}}>💳</span> Tarjetas de Crédito</h3>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <SecondaryBtn onClick={function(){setShowTarjetas(true)}} style={{borderColor:"#818cf8",color:"#818cf8"}}>✎ Tarjetas</SecondaryBtn>
+              <PrimaryBtn onClick={openAddCompra} style={{background:"#818cf8"}}>+ Nueva Compra</PrimaryBtn>
+            </div>
+          </div>
+
+          <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+            <StatCard label="Compras activas" value={comprasActivas.length} color="#818cf8" sub={comprasConEstado.length+" compras totales"}/>
+            <StatCard label={"Total cuotas — "+monthLabel(selMonthTarjeta)} value={fmt(totalMesTarjeta)} color="#f87171" sub={comprasFiltradas.length+" cuota(s)"}/>
+          </div>
+
+          {/* Resumen por mes con buscador */}
+          <Card style={{marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:14,flexWrap:"wrap"}}>
+              <h4 style={{margin:0,fontSize:14,color:"#6b7280"}}>Resumen por mes (lo que debería figurar en el resumen)</h4>
+              <span style={{fontSize:13,color:"#6b7280"}}>Mes:</span>
+              <SelectInput value={selMonthTarjeta} onChange={setSelMonthTarjeta} options={availableMonthsTarjeta} style={{minWidth:140}}/>
+              <span style={{fontSize:15,fontWeight:700}}>{monthLabel(selMonthTarjeta)}</span>
+            </div>
+
+            {porTarjetaArr.length>0 && <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:16}}>
+              {porTarjetaArr.map(function(entry){
+                return <div key={entry[0]} style={{background:"#0f1117",borderRadius:10,padding:"10px 14px",minWidth:150}}>
+                  <div style={{fontSize:12,color:"#6b7280"}}>{entry[0]}</div>
+                  <div style={{fontSize:16,fontWeight:700,color:"#818cf8"}}>{fmt(entry[1])}</div>
+                </div>;
+              })}
+            </div>}
+
+            {comprasFiltradas.length===0
+              ? <div style={{textAlign:"center",color:"#6b7280",padding:20}}>No hay cuotas de tarjeta para {monthLabel(selMonthTarjeta)}.</div>
+              : <div style={{overflowX:"auto"}}>
+                  <table>
+                    <thead><tr>
+                      <th>Tarjeta</th><th>Descripción</th><th style={{textAlign:"center"}}>Cuota</th><th style={{textAlign:"right"}}>Monto cuota</th><th style={{textAlign:"center"}}>Acciones</th>
+                    </tr></thead>
+                    <tbody>
+                      {comprasFiltradas.map(function(c,i){
+                        return <tr key={c.id} style={{background:i%2===0?"#1a1d27":"transparent"}}>
+                          <td style={{borderRadius:"8px 0 0 8px"}}><span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span></td>
+                          <td>{c.desc}</td>
+                          <td style={{textAlign:"center"}}>{c.cuotaNum}/{c.cuotasTotal}</td>
+                          <td style={{textAlign:"right",fontWeight:600}}>{fmt(c.monto)}</td>
+                          <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                            <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                              <EditBtn onClick={function(){openEditCompra(compras.find(function(x){return x.id===c.id}))}}/>
+                              <DeleteBtn onClick={function(){deleteCompra(c.id)}}/>
+                            </div>
+                          </td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+            }
+            <div style={{marginTop:14,fontSize:14}}>
+              <span style={{color:"#6b7280"}}>Total {monthLabel(selMonthTarjeta)}: </span><strong style={{color:"#f87171"}}>{fmt(totalMesTarjeta)}</strong>
+            </div>
+          </Card>
+
+          {/* Control de todas las compras y cuotas restantes */}
+          <h4 style={{margin:"0 0 12px",fontSize:14,color:"#6b7280"}}>Todas las compras — control de cuotas</h4>
+          {comprasConEstado.length===0
+            ? <Card><div style={{textAlign:"center",color:"#6b7280",padding:30}}>No hay compras con tarjeta registradas todavía.</div></Card>
+            : <div style={{overflowX:"auto"}}>
+                <table>
+                  <thead><tr>
+                    <th>Tarjeta</th><th>Descripción</th><th>1ª cuota</th><th style={{textAlign:"right"}}>Monto total</th><th style={{textAlign:"right"}}>Monto cuota</th><th style={{textAlign:"center"}}>Cuotas</th><th style={{textAlign:"center"}}>Pagadas</th><th style={{textAlign:"center"}}>Restantes</th><th style={{textAlign:"center"}}>Estado</th><th style={{textAlign:"center"}}>Acciones</th>
+                  </tr></thead>
+                  <tbody>
+                    {comprasConEstado.map(function(c,i){
+                      return <tr key={c.id} style={{background:i%2===0?"#1a1d27":"transparent"}}>
+                        <td style={{borderRadius:"8px 0 0 8px"}}><span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span></td>
+                        <td>{c.desc}</td>
+                        <td>{(c.fecha||"").slice(0,10)}</td>
+                        <td style={{textAlign:"right",fontWeight:600}}>{fmt(c.monto)}</td>
+                        <td style={{textAlign:"right"}}>{fmt(c.montoCuota)}</td>
+                        <td style={{textAlign:"center"}}>{c.cuotas}</td>
+                        <td style={{textAlign:"center"}}>{c.pagadas}</td>
+                        <td style={{textAlign:"center",fontWeight:700,color:c.restantes>0?"#facc15":"#4ade80"}}>{c.restantes}</td>
+                        <td style={{textAlign:"center"}}>
+                          <span style={{color:c.estado==="Finalizada"?"#4ade80":c.estado==="Próxima"?"#6b7280":"#818cf8",fontWeight:600,fontSize:12}}>{c.estado}</span>
+                        </td>
+                        <td style={{textAlign:"center",borderRadius:"0 8px 8px 0"}}>
+                          <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                            <EditBtn onClick={function(){openEditCompra(c)}}/>
+                            <DeleteBtn onClick={function(){deleteCompra(c.id)}}/>
+                          </div>
+                        </td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+          }
+        </div>;
+      }()}
 
       {/* PANEL USD */}
       {tab==="Panel USD" && <div>
@@ -829,12 +1062,7 @@ function App(){
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Descripción</label><TextInput value={gDesc} onChange={setGDesc} placeholder="Ej: Compra supermercado"/></div>
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Monto total ($)</label><TextInput type="number" value={gMonto} onChange={setGMonto} placeholder="0" min="0"/></div>
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Rubro</label><SelectInput value={gRubro} onChange={setGRubro} options={rubros} placeholder="Seleccionar rubro" style={{width:"100%"}}/></div>
-          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Medio de pago</label><SelectInput value={gMetodo} onChange={function(v){setGMetodo(v);if(v!=="Tarjeta")setGCuotas("1")}} options={PAYMENT_METHODS} style={{width:"100%"}}/></div>
-          {gMetodo==="Tarjeta" && <div>
-            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Cuotas</label>
-            <TextInput type="number" value={gCuotas} onChange={setGCuotas} min="1" placeholder="1"/>
-            {parseInt(gCuotas)>1 && gMonto && <div style={{fontSize:12,color:"#2dd4bf",marginTop:4}}>Cuota mensual: {fmt(parseFloat(gMonto)/parseInt(gCuotas))}</div>}
-          </div>}
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Medio de pago</label><SelectInput value={gMetodo} onChange={setGMetodo} options={PAYMENT_METHODS} style={{width:"100%"}}/></div>
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={gFecha} onChange={setGFecha}/></div>
           <PrimaryBtn onClick={saveGasto} disabled={!gDesc||!gMonto||!gRubro} style={{marginTop:8}}>{editGasto?"Guardar cambios":"Registrar gasto"}</PrimaryBtn>
         </div>
@@ -895,6 +1123,40 @@ function App(){
         <div style={{display:"flex",gap:8}}>
           <TextInput value={newMember} onChange={setNewMember} placeholder="Nuevo miembro..." style={{flex:1}}/>
           <PrimaryBtn onClick={addMember} disabled={!newMember.trim()}>Agregar</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showTarjetas} onClose={function(){setShowTarjetas(false)}} title="Editar Tarjetas">
+        <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+          {tarjetas.map(function(t){return <div key={t} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#0f1117",borderRadius:8}}>
+            <span style={{fontSize:14}}>{t}</span>
+            <DeleteBtn onClick={function(){removeTarjeta(t)}}/>
+          </div>})}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <TextInput value={newTarjeta} onChange={setNewTarjeta} placeholder="Ej: Visa Banco X, Mastercard..." style={{flex:1}}/>
+          <PrimaryBtn onClick={addTarjeta} disabled={!newTarjeta.trim()} style={{background:"#818cf8"}}>Agregar</PrimaryBtn>
+        </div>
+      </Modal>
+
+      <Modal open={showCompra} onClose={function(){setShowCompra(false);resetCompraForm()}} title={editCompra?"Editar Compra":"Nueva Compra con Tarjeta"}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Descripción</label><TextInput value={cDesc} onChange={setCDesc} placeholder="Ej: Notebook, electrodoméstico..."/></div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Monto total ($)</label><TextInput type="number" value={cMonto} onChange={setCMonto} placeholder="0" min="0"/></div>
+          <div>
+            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Tarjeta</label>
+            {tarjetas.length===0
+              ? <div style={{fontSize:13,color:"#f87171"}}>Primero agregá una tarjeta con "✎ Tarjetas".</div>
+              : <SelectInput value={cTarjeta} onChange={setCTarjeta} options={tarjetas} placeholder="Seleccionar tarjeta" style={{width:"100%"}}/>
+            }
+          </div>
+          <div>
+            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Cuotas</label>
+            <TextInput type="number" value={cCuotas} onChange={setCCuotas} min="1" placeholder="1"/>
+            {parseInt(cCuotas)>1 && cMonto && <div style={{fontSize:12,color:"#818cf8",marginTop:4}}>Cuota mensual: {fmt(parseFloat(cMonto)/parseInt(cCuotas))}</div>}
+          </div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Fecha 1ª cuota</label><TextInput type="date" value={cFecha} onChange={setCFecha}/></div>
+          <PrimaryBtn onClick={saveCompra} disabled={!cDesc||!cMonto||!cTarjeta} style={{marginTop:8,background:"#818cf8"}}>{editCompra?"Guardar cambios":"Registrar compra"}</PrimaryBtn>
         </div>
       </Modal>
     </div>
