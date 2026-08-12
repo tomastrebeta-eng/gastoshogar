@@ -246,15 +246,11 @@ function Root(){
 
   var signIn=function(){
     setAuthError("");
-    firebase.auth().signInWithPopup(googleProvider).catch(function(e){
+    firebase.auth().signInWithPopup(googleProvider).then(function(result){
+      console.log("signInWithPopup OK:",result&&result.user&&result.user.email);
+    }).catch(function(e){
       console.error("signInWithPopup error:",e);
-      if(e.code==="auth/popup-blocked"||e.code==="auth/operation-not-supported-in-this-environment"){
-        firebase.auth().signInWithRedirect(googleProvider).catch(function(e2){
-          setAuthError("("+e2.code+") "+e2.message);
-        });
-      } else if(e.code!=="auth/popup-closed-by-user"&&e.code!=="auth/cancelled-popup-request"){
-        setAuthError("("+e.code+") "+e.message);
-      }
+      setAuthError("("+e.code+") "+e.message);
     });
   };
   var signOut=function(){firebase.auth().signOut()};
