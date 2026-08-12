@@ -245,12 +245,8 @@ function Root(){
 
   var signIn=function(){
     setAuthError("");
-    firebase.auth().signInWithPopup(googleProvider).catch(function(e){
-      if(e.code==="auth/popup-blocked"||e.code==="auth/cancelled-popup-request"||e.code==="auth/operation-not-supported-in-this-environment"){
-        firebase.auth().signInWithRedirect(googleProvider);
-      } else if(e.code!=="auth/popup-closed-by-user"){
-        setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
-      }
+    firebase.auth().signInWithRedirect(googleProvider).catch(function(e){
+      setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
     });
   };
   var signOut=function(){firebase.auth().signOut()};
