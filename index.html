@@ -233,7 +233,8 @@ function Root(){
 
   useEffect(function(){
     firebase.auth().getRedirectResult().catch(function(e){
-      if(e.code!=="auth/popup-closed-by-user")setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
+      console.error("Redirect result error:",e);
+      if(e.code!=="auth/popup-closed-by-user")setAuthError("("+e.code+") "+e.message);
     });
     var unsub=firebase.auth().onAuthStateChanged(function(u){
       setUser(u);
@@ -246,7 +247,8 @@ function Root(){
   var signIn=function(){
     setAuthError("");
     firebase.auth().signInWithRedirect(googleProvider).catch(function(e){
-      setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
+      console.error("signInWithRedirect error:",e);
+      setAuthError("("+e.code+") "+e.message);
     });
   };
   var signOut=function(){firebase.auth().signOut()};
