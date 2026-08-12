@@ -25,6 +25,7 @@
 <!-- Firebase -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0f1117;color:#e8eaed;min-height:100vh}
@@ -58,6 +59,7 @@ if (!firebase.apps.length) {
   firebase.initializeApp(firebaseConfig);
 }
 var db = firebase.firestore();
+var googleProvider = new firebase.auth.GoogleAuthProvider();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function(){
@@ -197,7 +199,69 @@ function Tabs(props){
   </div>;
 }
 
-function App(){
+function BrandMark(props){
+  return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:20,padding:20,textAlign:"center"}}>
+    <div style={{width:64,height:64,borderRadius:16,background:"linear-gradient(135deg,#2dd4bf,#818cf8)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:32}}>💰</div>
+    <div>
+      <div style={{fontFamily:"'Space Mono',monospace",fontSize:22,fontWeight:700}}>CasaBalance</div>
+      <div style={{fontSize:13,color:"#6b7280",marginTop:4}}>Control de gastos familiar</div>
+    </div>
+    {props.children}
+  </div>;
+}
+
+function LoginScreen(props){
+  return <BrandMark>
+    {props.error && <div style={{background:"#2a1418",border:"1px solid #f87171",color:"#f87171",borderRadius:8,padding:"10px 16px",fontSize:13,maxWidth:320}}>{props.error}</div>}
+    <PrimaryBtn onClick={props.onSignIn} style={{padding:"12px 24px",fontSize:15}}>Iniciar sesión con Google</PrimaryBtn>
+  </BrandMark>;
+}
+
+function AccessDenied(props){
+  return <BrandMark>
+    <div style={{fontSize:15,fontWeight:600,color:"#f87171"}}>🔒 Tu cuenta no tiene acceso</div>
+    <div style={{fontSize:13,color:"#6b7280",maxWidth:320}}>Iniciaste sesión como {props.email}. Si creés que es un error, pedile a Tomás que agregue tu cuenta.</div>
+    <SecondaryBtn onClick={props.onSignOut}>Cerrar sesión</SecondaryBtn>
+  </BrandMark>;
+}
+
+function Root(){
+  var[authState,setAuthState]=useState("loading");
+  var[user,setUser]=useState(null);
+  var[authError,setAuthError]=useState("");
+  var[denied,setDenied]=useState(false);
+
+  useEffect(function(){
+    firebase.auth().getRedirectResult().catch(function(e){
+      if(e.code!=="auth/popup-closed-by-user")setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
+    });
+    var unsub=firebase.auth().onAuthStateChanged(function(u){
+      setUser(u);
+      setAuthState(u?"in":"out");
+      if(u)setDenied(false);
+    });
+    return unsub;
+  },[]);
+
+  var signIn=function(){
+    setAuthError("");
+    firebase.auth().signInWithPopup(googleProvider).catch(function(e){
+      if(e.code==="auth/popup-blocked"||e.code==="auth/cancelled-popup-request"||e.code==="auth/operation-not-supported-in-this-environment"){
+        firebase.auth().signInWithRedirect(googleProvider);
+      } else if(e.code!=="auth/popup-closed-by-user"){
+        setAuthError("No se pudo iniciar sesión. Probá de nuevo.");
+      }
+    });
+  };
+  var signOut=function(){firebase.auth().signOut()};
+
+  if(authState==="loading")return null;
+  if(authState==="out")return <LoginScreen onSignIn={signIn} error={authError}/>;
+  if(denied)return <AccessDenied email={user.email} onSignOut={signOut}/>;
+  return <App user={user} onSignOut={signOut} onAccessDenied={function(){setDenied(true)}}/>;
+}
+
+function App(props){
   var[rubros,setRubros]=useState(function(){
     try{var r=JSON.parse(localStorage.getItem("cb_rubros"));return(r&&r.length)?r:DEFAULT_RUBROS;}catch(e){return DEFAULT_RUBROS;}
   });
@@ -316,6 +380,7 @@ function App(){
       setFbReady(true);
     }, function(err){
       console.error("Config listener error:",err);
+      if(err.code==="permission-denied"&&props.onAccessDenied)props.onAccessDenied();
       setFbReady(true);
     });
 
@@ -713,6 +778,8 @@ function App(){
           {isIOS && !isStandalone && !canInstall && <span style={{fontSize:11,color:"#6b7280",maxWidth:160}}>Para instalar: Compartir ⬆️ → Agregar a inicio</span>}
           <SecondaryBtn onClick={function(){setShowRubros(true)}}>✎ Rubros</SecondaryBtn>
           <SecondaryBtn onClick={function(){setShowMembers(true)}}>✎ Miembros</SecondaryBtn>
+          <span style={{fontSize:11,color:"#6b7280",marginLeft:4}}>{props.user&&props.user.email}</span>
+          <SecondaryBtn onClick={props.onSignOut}>Salir</SecondaryBtn>
         </div>
       </div>
 
@@ -1254,7 +1321,7 @@ function App(){
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+ReactDOM.createRoot(document.getElementById("root")).render(<Root/>);
 </script>
 </body>
 </html>
