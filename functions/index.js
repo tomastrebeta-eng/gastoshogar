@@ -80,7 +80,8 @@ exports.extraerResumen = onCall(
     const listaRubros = Array.isArray(rubros) && rubros.length ? rubros : ["Otros"];
     const listaTarjetas = Array.isArray(tarjetas) && tarjetas.length ? tarjetas : [tarjeta || "desconocida"];
 
-    const client = new Anthropic({apiKey: ANTHROPIC_API_KEY.value()});
+    // trim(): al cargar el secreto con un pipe de PowerShell queda un salto de línea al final
+    const client = new Anthropic({apiKey: ANTHROPIC_API_KEY.value().trim()});
     let response;
     try {
       response = await client.beta.messages.parse({
