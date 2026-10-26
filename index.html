@@ -41,6 +41,8 @@ td{padding:10px 12px}
 .online-dot.on{background:#4ade80;box-shadow:0 0 6px #4ade80}
 .online-dot.off{background:#f87171;box-shadow:0 0 6px #f87171;animation:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.spinner{width:16px;height:16px;border:2px solid #2a2d3a;border-top-color:#818cf8;border-radius:50%;display:inline-block;animation:spin .8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -346,7 +348,8 @@ function App(props){
 
   // Resúmenes de tarjeta (conciliación) y revisión de lo extraído del PDF
   var[resumenes,setResumenes]=useState({});
-  var[extrayendo,setExtrayendo]=useState(null);
+  var[cola,setCola]=useState([]);
+  var[tick,setTick]=useState(0);
   var[revision,setRevision]=useState(null);
   var[verResumen,setVerResumen]=useState(null);
   var pdfInputRef=useRef(null);
@@ -759,45 +762,85 @@ function App(props){
     });
   },[gastos,tarjetas]);
 
-  var subirResumen=function(tarjeta,periodo){
-    pdfDestinoRef.current={tarjeta:tarjeta,periodo:periodo};
+  // tarjetaForzada: si se sube desde la fila de una tarjeta; si es null, la IA detecta la tarjeta de cada PDF
+  var subirResumen=function(tarjetaForzada,periodo){
+    pdfDestinoRef.current={tarjeta:tarjetaForzada,periodo:periodo};
     if(pdfInputRef.current){pdfInputRef.current.value="";pdfInputRef.current.click()}
   };
 
-  var onPdfElegido=function(e){
-    var file=e.target.files&&e.target.files[0];
-    var destino=pdfDestinoRef.current;
-    if(!file||!destino)return;
-    if(file.size>8*1024*1024){alert("El PDF es demasiado grande (máximo 8 MB).");return}
-    setExtrayendo(destino);
-    fileToBase64(file).then(function(b64){
-      var fn=firebase.app().functions("us-central1").httpsCallable("extraerResumen",{timeout:300000});
-      return fn({pdf:b64,tarjeta:destino.tarjeta,rubros:rubros});
-    }).then(function(res){
-      var r=res.data;
-      // El período es el mes de la fecha de cierre impresa en el resumen (si se pudo leer)
-      var periodo=/^\d{4}-\d{2}-\d{2}$/.test(r.fecha_cierre)?r.fecha_cierre.slice(0,7):destino.periodo;
-      var items=r.items.map(function(it,idx){
-        var match=null;
-        if(it.tipo==="cuota"&&it.cuotas_total>1){
-          match=comprasExpandidas.find(function(c){
-            return c.tarjeta===destino.tarjeta&&c.mes===periodo&&c.cuotasTotal===it.cuotas_total&&c.cuotaNum===it.cuota_numero&&Math.abs(c.monto-it.monto)<=Math.max(it.monto*0.15,1000);
-          })||null;
-        }
-        return Object.assign({},it,{
-          key:idx,
-          rubro:rubros.indexOf(it.rubro)>=0?it.rubro:"Otros",
-          compraExistente:match?match.desc:null,
-          agregarCompra:it.tipo==="cuota"&&it.cuotas_total>1&&!match&&it.moneda==="ARS"
-        });
+  // Arma la pantalla de revisión a partir de lo que devolvió la IA, para una tarjeta dada
+  var armarRevision=function(r,tarjeta,archivo,periodoDefault){
+    // El período es el mes de la fecha de cierre impresa en el resumen (si se pudo leer)
+    var periodo=/^\d{4}-\d{2}-\d{2}$/.test(r.fecha_cierre)?r.fecha_cierre.slice(0,7):periodoDefault;
+    var items=r.items.map(function(it,idx){
+      var match=null;
+      if(it.tipo==="cuota"&&it.cuotas_total>1){
+        match=comprasExpandidas.find(function(c){
+          return c.tarjeta===tarjeta&&c.mes===periodo&&c.cuotasTotal===it.cuotas_total&&c.cuotaNum===it.cuota_numero&&Math.abs(c.monto-it.monto)<=Math.max(it.monto*0.15,1000);
+        })||null;
+      }
+      return Object.assign({},it,{
+        key:idx,
+        rubro:rubros.indexOf(it.rubro)>=0?it.rubro:"Otros",
+        compraExistente:match?match.desc:null,
+        agregarCompra:it.tipo==="cuota"&&it.cuotas_total>1&&!match&&it.moneda==="ARS"
       });
-      setRevision({tarjeta:destino.tarjeta,periodo:periodo,cierre:r.fecha_cierre,vencimiento:r.fecha_vencimiento,
-        total:r.total_ars,totalUSD:r.total_usd,notas:r.notas,archivo:file.name,items:items});
-    }).catch(function(err){
-      console.error("extraerResumen error:",err);
-      alert("No se pudo leer el resumen: "+(err.message||err));
-    }).finally(function(){setExtrayendo(null)});
+    });
+    return {tarjeta:tarjeta,periodo:periodo,cierre:r.fecha_cierre,vencimiento:r.fecha_vencimiento,
+      total:r.total_ars,totalUSD:r.total_usd,notas:r.notas,archivo:archivo,items:items,raw:r,periodoDefault:periodoDefault};
   };
+
+  var cambiarTarjetaRevision=function(t){
+    setRevision(function(rev){return armarRevision(rev.raw,t,rev.archivo,rev.periodoDefault)});
+  };
+
+  var actualizarCola=function(id,cambios){
+    setCola(function(c){return c.map(function(x){return x.id===id?Object.assign({},x,cambios):x})});
+  };
+
+  var onPdfElegido=function(e){
+    var files=Array.from(e.target.files||[]);
+    var destino=pdfDestinoRef.current||{};
+    if(files.length===0)return;
+    var nombresTarjetas=tarjetas.filter(function(t){return t.nombre!=="Sin asignar"}).map(function(t){return t.nombre});
+    var fn=firebase.app().functions("us-central1").httpsCallable("extraerResumen",{timeout:300000});
+    files.forEach(function(file){
+      var id=uid();
+      if(file.size>8*1024*1024){
+        setCola(function(c){return c.concat([{id:id,archivo:file.name,estado:"error",error:"El PDF pesa más de 8 MB."}])});
+        return;
+      }
+      setCola(function(c){return c.concat([{id:id,archivo:file.name,estado:"leyendo",inicio:Date.now()}])});
+      // Todos los PDF se leen en paralelo
+      fileToBase64(file).then(function(b64){
+        return fn({pdf:b64,tarjeta:destino.tarjeta||null,tarjetas:nombresTarjetas,rubros:rubros});
+      }).then(function(res){
+        var r=res.data;
+        var t=destino.tarjeta||(nombresTarjetas.indexOf(r.tarjeta_detectada)>=0?r.tarjeta_detectada:"");
+        actualizarCola(id,{estado:"listo",data:r,tarjeta:t,periodoDefault:destino.periodo||selMonthTarjeta});
+      }).catch(function(err){
+        console.error("extraerResumen error:",err);
+        actualizarCola(id,{estado:"error",error:err.message||String(err)});
+      });
+    });
+  };
+
+  // Abre automáticamente el siguiente resumen leído cuando no hay ninguno en revisión
+  useEffect(function(){
+    if(revision)return;
+    var listo=cola.find(function(x){return x.estado==="listo"});
+    if(!listo)return;
+    setRevision(armarRevision(listo.data,listo.tarjeta,listo.archivo,listo.periodoDefault));
+    setCola(function(c){return c.filter(function(x){return x.id!==listo.id})});
+  },[cola,revision]);
+
+  // Reloj para mostrar los segundos transcurridos mientras se lee algún PDF
+  var hayLeyendo=cola.some(function(x){return x.estado==="leyendo"});
+  useEffect(function(){
+    if(!hayLeyendo)return;
+    var iv=setInterval(function(){setTick(function(t){return t+1})},1000);
+    return function(){clearInterval(iv)};
+  },[hayLeyendo]);
 
   var updateItemRevision=function(key,campo,valor){
     setRevision(function(r){
@@ -1185,7 +1228,7 @@ function App(props){
         var comprasSinAsignar=compras.filter(function(c){return c.tarjeta==="Sin asignar"}).length;
 
         return <div>
-          <input type="file" accept="application/pdf" ref={pdfInputRef} onChange={onPdfElegido} style={{display:"none"}}/>
+          <input type="file" accept="application/pdf" multiple ref={pdfInputRef} onChange={onPdfElegido} style={{display:"none"}}/>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
             <h3 style={{margin:0,fontSize:16,color:"#818cf8",display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18}}>💳</span> Tarjetas de Crédito</h3>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -1205,8 +1248,25 @@ function App(props){
               <h4 style={{margin:0,fontSize:14,color:"#6b7280"}}>Conciliación de resúmenes — cierre de</h4>
               <SelectInput value={selMonthTarjeta} onChange={setSelMonthTarjeta} options={availableMonthsTarjeta} style={{minWidth:140}}/>
               <span style={{fontSize:15,fontWeight:700}}>{monthLabel(selMonthTarjeta)}</span>
+              <PrimaryBtn onClick={function(){subirResumen(null,selMonthTarjeta)}} style={{background:"#818cf8",marginLeft:"auto",padding:"8px 16px",fontSize:13}}>📄 Subir resúmenes (PDF)</PrimaryBtn>
             </div>
-            <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>Compara lo que pagaste (gastos del rubro "{RUBRO_TC}") con lo que explica cada resumen. Subí el PDF para ver el detalle completo.</div>
+            <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>Compara lo que pagaste (gastos del rubro "{RUBRO_TC}") con lo que explica cada resumen. Podés elegir varios PDF juntos: se leen al mismo tiempo y la app detecta de qué tarjeta es cada uno.</div>
+
+            {cola.length>0 && <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
+              {cola.map(function(x){
+                var seg=x.inicio?Math.floor((Date.now()-x.inicio)/1000):0;
+                return <div key={x.id} style={{display:"flex",alignItems:"center",gap:10,background:"#0f1117",borderRadius:8,padding:"8px 12px",fontSize:13}}>
+                  {x.estado==="leyendo" && <span className="spinner"></span>}
+                  {x.estado==="listo" && <span style={{color:"#4ade80"}}>✓</span>}
+                  {x.estado==="error" && <span style={{color:"#f87171"}}>✕</span>}
+                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{x.archivo}</span>
+                  {x.estado==="leyendo" && <span style={{color:"#818cf8"}}>Leyendo con IA… {seg}s</span>}
+                  {x.estado==="listo" && <span style={{color:"#4ade80"}}>Listo, esperando revisión</span>}
+                  {x.estado==="error" && <span style={{color:"#f87171"}}>{x.error}</span>}
+                  {x.estado==="error" && <button onClick={function(){setCola(function(c){return c.filter(function(y){return y.id!==x.id})})}} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer"}}>✕</button>}
+                </div>;
+              })}
+            </div>}
             <div style={{overflowX:"auto"}}>
               <table>
                 <thead><tr>
@@ -1214,7 +1274,6 @@ function App(props){
                 </tr></thead>
                 <tbody>
                   {conciliacion.map(function(c,i){
-                    var cargando=extrayendo&&extrayendo.tarjeta===c.tarjeta;
                     var colorSin=c.pagado===0?"#6b7280":Math.abs(c.sinIdentificar)<Math.max(c.pagado*0.03,2000)?"#4ade80":"#facc15";
                     return <tr key={c.tarjeta} style={{background:i%2===0?"#1a1d27":"transparent",verticalAlign:"top"}}>
                       <td style={{borderRadius:"8px 0 0 8px"}}><span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span></td>
@@ -1233,19 +1292,16 @@ function App(props){
                       </td>
                       <td style={{textAlign:"right",fontWeight:700,color:colorSin}}>{c.pagado>0?fmt(c.sinIdentificar):"—"}</td>
                       <td style={{textAlign:"center",borderRadius:"0 8px 8px 0",whiteSpace:"nowrap"}}>
-                        {cargando
-                          ? <span style={{fontSize:12,color:"#818cf8"}}>Leyendo PDF…</span>
-                          : <div style={{display:"flex",gap:4,justifyContent:"center"}}>
-                              {c.res && <SecondaryBtn onClick={function(){setVerResumen(c.res)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>Ver</SecondaryBtn>}
-                              <SecondaryBtn onClick={function(){subirResumen(c.tarjeta,selMonthTarjeta)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}} disabled={!!extrayendo}>📄 {c.res?"Reemplazar":"Subir"}</SecondaryBtn>
-                            </div>}
+                        <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                          {c.res && <SecondaryBtn onClick={function(){setVerResumen(c.res)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>Ver</SecondaryBtn>}
+                          <SecondaryBtn onClick={function(){subirResumen(c.tarjeta,selMonthTarjeta)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>📄 {c.res?"Reemplazar":"Subir"}</SecondaryBtn>
+                        </div>
                       </td>
                     </tr>;
                   })}
                 </tbody>
               </table>
             </div>
-            {extrayendo && <div style={{marginTop:10,fontSize:12,color:"#818cf8"}}>Leyendo el resumen de {extrayendo.tarjeta} con IA… puede tardar hasta un minuto.</div>}
             {pagosSinTarjeta.length>0 && <div style={{marginTop:12,fontSize:12,color:"#facc15"}}>⚠ {pagosSinTarjeta.length} pago(s) de tarjeta sin tarjeta identificada ({pagosSinTarjeta.map(function(p){return p.desc}).join(", ")}). Editalos en Gastos y elegí la tarjeta.</div>}
             {comprasSinAsignar>0 && <div style={{marginTop:6,fontSize:12,color:"#facc15"}}>⚠ {comprasSinAsignar} compra(s) en cuotas con tarjeta "Sin asignar": no entran en la conciliación hasta que les asignes la tarjeta.</div>}
           </Card>
@@ -1560,13 +1616,20 @@ function App(props){
       </Modal>
 
       {/* Revisión de lo extraído del PDF antes de guardar */}
-      <Modal open={!!revision} wide onClose={function(){if(confirm("¿Descartar lo leído del resumen?"))setRevision(null)}} title={revision?"Revisar resumen — "+revision.tarjeta+" · cierre "+monthLabel(revision.periodo):""}>
+      <Modal open={!!revision} wide onClose={function(){if(confirm("¿Descartar lo leído del resumen?"))setRevision(null)}} title={revision?"Revisar resumen — cierre "+monthLabel(revision.periodo):""}>
         {revision && function(){
           var lineas=revision.items.filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"});
           var sumaLineas=lineas.reduce(function(s,it){return s+it.monto},0);
           var difTotal=revision.total-sumaLineas;
           var nuevas=revision.items.filter(function(it){return it.agregarCompra}).length;
+          var pendientes=cola.filter(function(x){return x.estado!=="error"}).length;
           return <div>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:12,fontSize:13}}>
+              <span style={{color:"#6b7280"}}>Archivo: {revision.archivo}</span>
+              <span style={{color:"#6b7280",marginLeft:8}}>Tarjeta:</span>
+              <SelectInput value={revision.tarjeta} onChange={cambiarTarjetaRevision} options={tarjetas.filter(function(t){return t.nombre!=="Sin asignar"}).map(function(t){return t.nombre})} placeholder="¿De qué tarjeta es?" style={{minWidth:200,borderColor:revision.tarjeta?"#2a2d3a":"#facc15"}}/>
+              {pendientes>0 && <span style={{color:"#818cf8",marginLeft:"auto"}}>Quedan {pendientes} resumen(es) más</span>}
+            </div>
             <div style={{display:"flex",gap:20,flexWrap:"wrap",fontSize:13,marginBottom:12}}>
               <div><span style={{color:"#6b7280"}}>Cierre: </span>{revision.cierre}</div>
               <div><span style={{color:"#6b7280"}}>Vencimiento: </span>{revision.vencimiento}</div>
@@ -1605,7 +1668,7 @@ function App(props){
             </div>
             <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,flexWrap:"wrap"}}>
               <SecondaryBtn onClick={function(){setRevision(null)}} style={{borderColor:"#6b7280",color:"#6b7280"}}>Descartar</SecondaryBtn>
-              <PrimaryBtn onClick={guardarRevision} style={{background:"#818cf8"}}>Guardar resumen{nuevas>0?" y agregar "+nuevas+" compra(s)":""}</PrimaryBtn>
+              <PrimaryBtn onClick={guardarRevision} disabled={!revision.tarjeta} style={{background:revision.tarjeta?"#818cf8":undefined}}>Guardar resumen{nuevas>0?" y agregar "+nuevas+" compra(s)":""}</PrimaryBtn>
             </div>
           </div>;
         }()}

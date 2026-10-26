@@ -30,11 +30,15 @@ const ResumenSchema = z.object({
   notas: z.string(),
 });
 
-function buildPrompt(tarjeta, rubros) {
-  return `Este PDF es el resumen de la tarjeta de crédito "${tarjeta}" de una familia argentina.
+function buildPrompt(tarjeta, tarjetas, rubros) {
+  const queTarjeta = tarjeta
+    ? `Este PDF es el resumen de la tarjeta de crédito "${tarjeta}" de una familia argentina.`
+    : `Este PDF es el resumen de una tarjeta de crédito de una familia argentina.`;
+  return `${queTarjeta}
 Extraé TODAS las líneas que generan el total a pagar y devolvelas en el formato pedido.
 
 Reglas:
+- tarjeta_detectada: de esta lista, el nombre exacto de la tarjeta a la que corresponde el resumen (según banco, marca y titular): ${tarjetas.join(" | ")}. Si ninguna corresponde, devolvé "".
 - fecha_cierre y fecha_vencimiento en formato AAAA-MM-DD. fecha de cada línea también en AAAA-MM-DD (si el resumen no trae año, deducilo del período).
 - total_ars y total_usd: el "saldo actual" / "total a pagar" del resumen en cada moneda (0 si no hay).
 - monto: positivo para cargos, negativo para créditos, bonificaciones o devoluciones.
@@ -69,11 +73,12 @@ exports.extraerResumen = onCall(
   async (request) => {
     await verificarAcceso(request);
 
-    const {pdf, tarjeta, rubros} = request.data || {};
+    const {pdf, tarjeta, tarjetas, rubros} = request.data || {};
     if (typeof pdf !== "string" || pdf.length < 100) {
       throw new HttpsError("invalid-argument", "Falta el PDF del resumen.");
     }
     const listaRubros = Array.isArray(rubros) && rubros.length ? rubros : ["Otros"];
+    const listaTarjetas = Array.isArray(tarjetas) && tarjetas.length ? tarjetas : [tarjeta || "desconocida"];
 
     const client = new Anthropic({apiKey: ANTHROPIC_API_KEY.value()});
     let response;
@@ -83,12 +88,13 @@ exports.extraerResumen = onCall(
         max_tokens: 16000,
         betas: ["server-side-fallback-2026-07-01"],
         fallbacks: "default",
-        output_config: {effort: "medium", format: betaZodOutputFormat(ResumenSchema)},
+        // Extraer líneas de un resumen no requiere razonamiento profundo: effort bajo es más rápido y barato
+        output_config: {effort: "low", format: betaZodOutputFormat(ResumenSchema)},
         messages: [{
           role: "user",
           content: [
             {type: "document", source: {type: "base64", media_type: "application/pdf", data: pdf}},
-            {type: "text", text: buildPrompt(tarjeta || "desconocida", listaRubros)},
+            {type: "text", text: buildPrompt(tarjeta, listaTarjetas, listaRubros)},
           ],
         }],
       });
