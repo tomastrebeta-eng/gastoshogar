@@ -1,0 +1,5 @@
+node_modules/
+# Los resúmenes de tarjeta tienen datos personales: nunca subirlos al repo (GitHub Pages los publicaría)
+*.pdf
+.firebase/
+firebase-debug.log

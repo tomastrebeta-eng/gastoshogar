@@ -26,6 +26,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'DM Sans',sans-serif;background:#0f1117;color:#e8eaed;min-height:100vh}
@@ -124,6 +125,39 @@ var calcularPrimeraCuota=function(fechaCompraStr, cierreDia){
   var finalDay=Math.min(cierre,lastDayOfMonth(year,month));
   return year+"-"+String(month+1).padStart(2,"0")+"-"+String(finalDay).padStart(2,"0");
 };
+var RUBRO_TC="Tarjeta de crédito";
+var TIPOS_ITEM=["consumo","cuota","fijo","impuesto","interes","pago","otro"];
+var TIPO_LABEL={consumo:"Consumos",cuota:"Cuotas",fijo:"Fijos / débitos",impuesto:"Impuestos",interes:"Intereses y cargos",pago:"Pagos / saldo anterior",otro:"Otros"};
+var normTxt=function(s){return (s||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase()};
+var addMonths=function(mk,n){var p=mk.split("-");var d=new Date(parseInt(p[0]),parseInt(p[1])-1+n,1);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")};
+// Resumen (mes de cierre) que cubre un pago: el último cierre anterior a la fecha del pago.
+var periodoPagado=function(fechaPagoStr,cierreDia){
+  var d=new Date(fechaPagoStr+"T12:00:00");
+  var mk=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+  return d.getDate()<=(parseInt(cierreDia)||1)?addMonths(mk,-1):mk;
+};
+// Para pagos viejos cargados sin tarjeta: deduce la tarjeta por la descripción ("Naranja Tomás", "Amex macro"...).
+var detectarTarjeta=function(desc,tarjetas){
+  var nd=normTxt(desc), ndJunto=nd.replace(/\s/g,"");
+  var mejor=null, mejorScore=0, empate=false;
+  tarjetas.forEach(function(t){
+    var nt=normTxt(t.nombre);
+    var score=nt.split(/\s+/).filter(function(w){return w.length>=4&&w!=="tarjeta"&&ndJunto.indexOf(w)>=0}).length;
+    if(nt.indexOf("american")>=0&&nd.indexOf("amex")>=0)score++;
+    if(score>mejorScore){mejor=t.nombre;mejorScore=score;empate=false}
+    else if(score>0&&score===mejorScore){empate=true}
+  });
+  return mejorScore>0&&!empate?mejor:null;
+};
+var resumenId=function(tarjeta,periodo){return normTxt(tarjeta).replace(/[^a-z0-9]+/g,"_")+"_"+periodo};
+var fileToBase64=function(file){
+  return new Promise(function(resolve,reject){
+    var r=new FileReader();
+    r.onload=function(){resolve(String(r.result).split(",")[1])};
+    r.onerror=reject;
+    r.readAsDataURL(file);
+  });
+};
 var nowD=new Date();
 var currentMK=nowD.getFullYear()+"-"+String(nowD.getMonth()+1).padStart(2,"0");
 
@@ -136,7 +170,7 @@ function Modal(props){
   if(!props.open)return null;
   return(
     React.createElement("div",{onClick:props.onClose,style:{position:"fixed",inset:0,zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.55)",backdropFilter:"blur(4px)"}},
-      React.createElement("div",{onClick:function(e){e.stopPropagation()},style:{background:"#1a1d27",borderRadius:16,padding:28,minWidth:320,maxWidth:520,width:"90%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 25px 60px rgba(0,0,0,0.4)",border:"1px solid #2a2d3a"}},
+      React.createElement("div",{onClick:function(e){e.stopPropagation()},style:{background:"#1a1d27",borderRadius:16,padding:28,minWidth:320,maxWidth:props.wide?960:520,width:"90%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 25px 60px rgba(0,0,0,0.4)",border:"1px solid #2a2d3a"}},
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
           <h3 style={{margin:0,fontSize:18,color:"#e8eaed"}}>{props.title}</h3>
           <button onClick={props.onClose} style={{background:"none",border:"none",color:"#6b7280",fontSize:22,cursor:"pointer",padding:4}}>✕</button>
@@ -178,7 +212,7 @@ function PrimaryBtn(props){
 }
 
 function SecondaryBtn(props){
-  return <button onClick={props.onClick} style={Object.assign({background:"transparent",color:"#2dd4bf",border:"1px solid #2dd4bf",borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:600,cursor:"pointer"},props.style||{})}>{props.children}</button>;
+  return <button onClick={props.onClick} disabled={props.disabled} style={Object.assign({background:"transparent",color:"#2dd4bf",border:"1px solid #2dd4bf",borderRadius:8,padding:"8px 16px",fontSize:13,fontWeight:600,cursor:props.disabled?"not-allowed":"pointer",opacity:props.disabled?0.5:1},props.style||{})}>{props.children}</button>;
 }
 
 function Card(props){
@@ -300,13 +334,23 @@ function App(props){
   var[gRubro,setGRubro]=useState("");
   var[gMetodo,setGMetodo]=useState("Efectivo");
   var[gFecha,setGFecha]=useState(todayStr());
+  var[gTarjeta,setGTarjeta]=useState("");
 
   var[cDesc,setCDesc]=useState("");
   var[cMonto,setCMonto]=useState("");
   var[cTarjeta,setCTarjeta]=useState("");
   var[cCuotas,setCCuotas]=useState("1");
   var[cFechaCompra,setCFechaCompra]=useState(todayStr());
+  var[cRubro,setCRubro]=useState("");
   var[selMonthTarjeta,setSelMonthTarjeta]=useState(currentMK);
+
+  // Resúmenes de tarjeta (conciliación) y revisión de lo extraído del PDF
+  var[resumenes,setResumenes]=useState({});
+  var[extrayendo,setExtrayendo]=useState(null);
+  var[revision,setRevision]=useState(null);
+  var[verResumen,setVerResumen]=useState(null);
+  var pdfInputRef=useRef(null);
+  var pdfDestinoRef=useRef(null);
 
   var[iDesc,setIDesc]=useState("");
   var[iMonto,setIMonto]=useState("");
@@ -419,7 +463,14 @@ function App(props){
       setCompras(arr);
     });
 
-    return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD();unsubCompras()};
+    // Resúmenes de tarjeta conciliados
+    var unsubResumenes = db.collection("casabalance").doc("data").collection("resumenes").onSnapshot(function(snap){
+      var map={};
+      snap.forEach(function(d){map[d.id]=Object.assign({id:d.id},d.data())});
+      setResumenes(map);
+    });
+
+    return function(){unsubConfig();unsubGastos();unsubIngresos();unsubAhorros();unsubGastosUSD();unsubCompras();unsubResumenes()};
   },[]);
 
   // Migración automática: mueve gastos cargados con método "Tarjeta" (legado) a la solapa Tarjetas
@@ -462,6 +513,11 @@ function App(props){
   var saveGasto = function(){
     if(!gDesc||!gMonto||!gRubro)return;
     var obj={desc:gDesc,monto:parseFloat(gMonto),rubro:gRubro,metodo:gMetodo,fecha:gFecha};
+    if(gRubro===RUBRO_TC&&gTarjeta){
+      var cierrePago=(tarjetas.find(function(t){return t.nombre===gTarjeta})||{}).cierre||1;
+      obj.tarjeta=gTarjeta;
+      obj.periodo=periodoPagado(gFecha,cierrePago);
+    }
     if(editGasto){
       db.collection("casabalance").doc("data").collection("gastos").doc(editGasto.id).set(obj)
         .catch(function(e){console.error(e)});
@@ -548,6 +604,7 @@ function App(props){
     var cierreTarjeta=(tarjetas.find(function(t){return t.nombre===cTarjeta})||{}).cierre||1;
     var fechaPrimeraCuota=calcularPrimeraCuota(cFechaCompra,cierreTarjeta);
     var obj={desc:cDesc,monto:parseFloat(cMonto),tarjeta:cTarjeta,cuotas:parseInt(cCuotas)||1,fechaCompra:cFechaCompra,fecha:fechaPrimeraCuota};
+    if(cRubro)obj.rubro=cRubro;
     if(editCompra){
       db.collection("casabalance").doc("data").collection("tarjetaCompras").doc(editCompra.id).set(obj)
         .catch(function(e){console.error(e)});
@@ -588,11 +645,27 @@ function App(props){
   var totalIngresosMes=ingresosMes.reduce(function(s,i){return s+i.monto},0);
   var balanceMes=totalIngresosMes-totalGastosMes;
 
+  // Los pagos de tarjeta con resumen conciliado se reparten entre los rubros reales de sus líneas,
+  // proporcional al monto pagado (así un pago parcial no infla nada). Sin resumen quedan como "sin detalle".
   var gastosPorRubro=useMemo(function(){
     var map={};
-    gastosMes.forEach(function(g){map[g.rubro]=(map[g.rubro]||0)+g.monto});
+    var sumar=function(r,v){map[r]=(map[r]||0)+v};
+    gastosMes.forEach(function(g){
+      if(g.rubro!==RUBRO_TC){sumar(g.rubro,g.monto);return}
+      var t=g.tarjeta||detectarTarjeta(g.desc,tarjetas);
+      var cierre=(tarjetas.find(function(x){return x.nombre===t})||{}).cierre;
+      var periodo=g.periodo||(t&&cierre?periodoPagado(g.fecha,cierre):null);
+      var res=t&&periodo?resumenes[resumenId(t,periodo)]:null;
+      var lineas=res?(res.items||[]).filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"&&it.monto>0}):[];
+      var totalLineas=lineas.reduce(function(s,it){return s+it.monto},0);
+      if(totalLineas<=0){sumar(RUBRO_TC+" (sin detalle)",g.monto);return}
+      lineas.forEach(function(it){
+        var r=it.tipo==="impuesto"||it.tipo==="interes"?"Impuestos e intereses tarjeta":it.rubro;
+        sumar(r,g.monto*it.monto/totalLineas);
+      });
+    });
     return Object.entries(map).sort(function(a,b){return b[1]-a[1]});
-  },[gastosMes]);
+  },[gastosMes,tarjetas,resumenes]);
 
   var gastosPorMetodo=useMemo(function(){
     var map={};
@@ -663,17 +736,113 @@ function App(props){
     }).sort(function(a,b){return b.fecha.localeCompare(a.fecha)});
   },[compras]);
 
-  var resetGastoForm=function(){setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGFecha(todayStr());setEditGasto(null)};
+  var resetGastoForm=function(){setGDesc("");setGMonto("");setGRubro("");setGMetodo("Efectivo");setGFecha(todayStr());setGTarjeta("");setEditGasto(null)};
   var resetIngresoForm=function(){setIDesc("");setIMonto("");setIMember("");setIFecha(todayStr());setEditIngreso(null)};
   var resetAhorroForm=function(){setADesc("");setAMonto("");setAUbicacion("Banco");setAFecha(todayStr());setEditAhorro(null)};
   var resetGastoUSDForm=function(){setGuDesc("");setGuMonto("");setGuRubro("");setGuFecha(todayStr());setEditGastoUSD(null)};
-  var resetCompraForm=function(){setCDesc("");setCMonto("");setCTarjeta("");setCCuotas("1");setCFechaCompra(todayStr());setEditCompra(null)};
+  var resetCompraForm=function(){setCDesc("");setCMonto("");setCTarjeta("");setCCuotas("1");setCFechaCompra(todayStr());setCRubro("");setEditCompra(null)};
 
   var openAddGasto=function(){resetGastoForm();setShowGasto(true)};
-  var openEditGasto=function(g){setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGFecha(g.fecha);setShowGasto(true)};
+  var openEditGasto=function(g){setEditGasto(g);setGDesc(g.desc);setGMonto(String(g.monto));setGRubro(g.rubro);setGMetodo(g.metodo);setGFecha(g.fecha);setGTarjeta(g.tarjeta||(g.rubro===RUBRO_TC?detectarTarjeta(g.desc,tarjetas):"")||"");setShowGasto(true)};
 
   var openAddCompra=function(){resetCompraForm();setShowCompra(true)};
-  var openEditCompra=function(c){setEditCompra(c);setCDesc(c.desc);setCMonto(String(c.monto));setCTarjeta(c.tarjeta);setCCuotas(String(c.cuotas));setCFechaCompra(c.fechaCompra||c.fecha);setShowCompra(true)};
+  var openEditCompra=function(c){setEditCompra(c);setCDesc(c.desc);setCMonto(String(c.monto));setCTarjeta(c.tarjeta);setCCuotas(String(c.cuotas));setCFechaCompra(c.fechaCompra||c.fecha);setCRubro(c.rubro||"");setShowCompra(true)};
+
+  // ===== Conciliación de resúmenes de tarjeta =====
+  // Pagos de resumen cargados en Gastos, con su tarjeta y el período (mes de cierre) que cubren.
+  var pagosTarjeta=useMemo(function(){
+    return gastos.filter(function(g){return g.rubro===RUBRO_TC}).map(function(g){
+      var t=g.tarjeta||detectarTarjeta(g.desc,tarjetas);
+      var cierre=(tarjetas.find(function(x){return x.nombre===t})||{}).cierre;
+      var periodo=g.periodo||(t&&cierre?periodoPagado(g.fecha,cierre):null);
+      return Object.assign({},g,{tarjeta:t,periodo:periodo,autodetectado:!g.tarjeta&&!!t});
+    });
+  },[gastos,tarjetas]);
+
+  var subirResumen=function(tarjeta,periodo){
+    pdfDestinoRef.current={tarjeta:tarjeta,periodo:periodo};
+    if(pdfInputRef.current){pdfInputRef.current.value="";pdfInputRef.current.click()}
+  };
+
+  var onPdfElegido=function(e){
+    var file=e.target.files&&e.target.files[0];
+    var destino=pdfDestinoRef.current;
+    if(!file||!destino)return;
+    if(file.size>8*1024*1024){alert("El PDF es demasiado grande (máximo 8 MB).");return}
+    setExtrayendo(destino);
+    fileToBase64(file).then(function(b64){
+      var fn=firebase.app().functions("us-central1").httpsCallable("extraerResumen",{timeout:300000});
+      return fn({pdf:b64,tarjeta:destino.tarjeta,rubros:rubros});
+    }).then(function(res){
+      var r=res.data;
+      // El período es el mes de la fecha de cierre impresa en el resumen (si se pudo leer)
+      var periodo=/^\d{4}-\d{2}-\d{2}$/.test(r.fecha_cierre)?r.fecha_cierre.slice(0,7):destino.periodo;
+      var items=r.items.map(function(it,idx){
+        var match=null;
+        if(it.tipo==="cuota"&&it.cuotas_total>1){
+          match=comprasExpandidas.find(function(c){
+            return c.tarjeta===destino.tarjeta&&c.mes===periodo&&c.cuotasTotal===it.cuotas_total&&c.cuotaNum===it.cuota_numero&&Math.abs(c.monto-it.monto)<=Math.max(it.monto*0.15,1000);
+          })||null;
+        }
+        return Object.assign({},it,{
+          key:idx,
+          rubro:rubros.indexOf(it.rubro)>=0?it.rubro:"Otros",
+          compraExistente:match?match.desc:null,
+          agregarCompra:it.tipo==="cuota"&&it.cuotas_total>1&&!match&&it.moneda==="ARS"
+        });
+      });
+      setRevision({tarjeta:destino.tarjeta,periodo:periodo,cierre:r.fecha_cierre,vencimiento:r.fecha_vencimiento,
+        total:r.total_ars,totalUSD:r.total_usd,notas:r.notas,archivo:file.name,items:items});
+    }).catch(function(err){
+      console.error("extraerResumen error:",err);
+      alert("No se pudo leer el resumen: "+(err.message||err));
+    }).finally(function(){setExtrayendo(null)});
+  };
+
+  var updateItemRevision=function(key,campo,valor){
+    setRevision(function(r){
+      return Object.assign({},r,{items:r.items.map(function(it){return it.key===key?Object.assign({},it,(function(){var o={};o[campo]=valor;return o})()):it})});
+    });
+  };
+
+  var guardarRevision=function(){
+    var r=revision;
+    var cierreTarjeta=(tarjetas.find(function(t){return t.nombre===r.tarjeta})||{}).cierre||1;
+    var batch=db.batch();
+    var base=db.collection("casabalance").doc("data");
+    var items=r.items.map(function(it){
+      return {fecha:it.fecha,desc:it.desc,monto:it.monto,moneda:it.moneda,tipo:it.tipo,rubro:it.rubro,
+        cuota_numero:it.cuota_numero,cuotas_total:it.cuotas_total,titular:it.titular};
+    });
+    batch.set(base.collection("resumenes").doc(resumenId(r.tarjeta,r.periodo)),{
+      tarjeta:r.tarjeta,periodo:r.periodo,cierre:r.cierre,vencimiento:r.vencimiento,
+      total:r.total,totalUSD:r.totalUSD,archivo:r.archivo,items:items,
+      cargado:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    // Compras en cuotas que figuran en el resumen pero nunca se cargaron en la app
+    r.items.filter(function(it){return it.agregarCompra}).forEach(function(it){
+      var primerMes=addMonths(r.periodo,-(it.cuota_numero-1));
+      var p=primerMes.split("-");
+      var dia=Math.min(cierreTarjeta,lastDayOfMonth(parseInt(p[0]),parseInt(p[1])-1));
+      batch.set(base.collection("tarjetaCompras").doc(),{
+        desc:it.desc,monto:Math.round(it.monto*it.cuotas_total),tarjeta:r.tarjeta,cuotas:it.cuotas_total,
+        fechaCompra:/^\d{4}-\d{2}-\d{2}$/.test(it.fecha)?it.fecha:primerMes+"-01",
+        fecha:primerMes+"-"+String(dia).padStart(2,"0"),rubro:it.rubro,origen:"resumen"
+      });
+    });
+    batch.commit().then(function(){setRevision(null)}).catch(function(e){
+      console.error("Error guardando resumen:",e);
+      alert("No se pudo guardar el resumen: "+e.message);
+    });
+  };
+
+  var borrarResumen=function(res){
+    if(confirm("¿Eliminar el resumen de "+res.tarjeta+" — "+monthLabel(res.periodo)+"? (Las compras en cuotas que agregó no se borran.)")){
+      db.collection("casabalance").doc("data").collection("resumenes").doc(res.id).delete()
+        .catch(function(e){console.error(e)});
+      setVerResumen(null);
+    }
+  };
 
   var openAddIngreso=function(){resetIngresoForm();setShowIngreso(true)};
   var openEditIngreso=function(ing){setEditIngreso(ing);setIDesc(ing.desc);setIMonto(String(ing.monto));setIMember(ing.member);setIFecha(ing.fecha);setShowIngreso(true)};
@@ -1001,7 +1170,22 @@ function App(props){
         var porTarjetaArr=Object.entries(porTarjetaMap).sort(function(a,b){return b[1]-a[1]});
         var comprasActivas=comprasConEstado.filter(function(c){return c.estado!=="Finalizada"});
 
+        // Conciliación: lo pagado en Gastos vs. lo que explica cada resumen del período
+        var conciliacion=tarjetas.filter(function(t){return t.nombre!=="Sin asignar"}).map(function(t){
+          var pagos=pagosTarjeta.filter(function(p){return p.tarjeta===t.nombre&&p.periodo===selMonthTarjeta});
+          var pagado=pagos.reduce(function(s,p){return s+p.monto},0);
+          var cuotas=comprasExpandidas.filter(function(c){return c.tarjeta===t.nombre&&c.mes===selMonthTarjeta}).reduce(function(s,c){return s+c.monto},0);
+          var res=resumenes[resumenId(t.nombre,selMonthTarjeta)]||null;
+          var porTipo={};
+          if(res)(res.items||[]).filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"}).forEach(function(it){porTipo[it.tipo]=(porTipo[it.tipo]||0)+it.monto});
+          var explicado=res?res.total:cuotas;
+          return {tarjeta:t.nombre,pagos:pagos,pagado:pagado,cuotas:cuotas,res:res,porTipo:porTipo,sinIdentificar:pagado-explicado};
+        });
+        var pagosSinTarjeta=pagosTarjeta.filter(function(p){return !p.tarjeta});
+        var comprasSinAsignar=compras.filter(function(c){return c.tarjeta==="Sin asignar"}).length;
+
         return <div>
+          <input type="file" accept="application/pdf" ref={pdfInputRef} onChange={onPdfElegido} style={{display:"none"}}/>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:8}}>
             <h3 style={{margin:0,fontSize:16,color:"#818cf8",display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18}}>💳</span> Tarjetas de Crédito</h3>
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
@@ -1014,6 +1198,57 @@ function App(props){
             <StatCard label="Compras activas" value={comprasActivas.length} color="#818cf8" sub={comprasConEstado.length+" compras totales"}/>
             <StatCard label={"Total cuotas — "+monthLabel(selMonthTarjeta)} value={fmt(totalMesTarjeta)} color="#f87171" sub={comprasFiltradas.length+" cuota(s)"}/>
           </div>
+
+          {/* Conciliación de resúmenes */}
+          <Card style={{marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:6,flexWrap:"wrap"}}>
+              <h4 style={{margin:0,fontSize:14,color:"#6b7280"}}>Conciliación de resúmenes — cierre de</h4>
+              <SelectInput value={selMonthTarjeta} onChange={setSelMonthTarjeta} options={availableMonthsTarjeta} style={{minWidth:140}}/>
+              <span style={{fontSize:15,fontWeight:700}}>{monthLabel(selMonthTarjeta)}</span>
+            </div>
+            <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>Compara lo que pagaste (gastos del rubro "{RUBRO_TC}") con lo que explica cada resumen. Subí el PDF para ver el detalle completo.</div>
+            <div style={{overflowX:"auto"}}>
+              <table>
+                <thead><tr>
+                  <th>Tarjeta</th><th style={{textAlign:"right"}}>Pagado</th><th style={{textAlign:"right"}}>Cuotas cargadas</th><th>Resumen</th><th style={{textAlign:"right"}}>Sin identificar</th><th style={{textAlign:"center"}}>PDF</th>
+                </tr></thead>
+                <tbody>
+                  {conciliacion.map(function(c,i){
+                    var cargando=extrayendo&&extrayendo.tarjeta===c.tarjeta;
+                    var colorSin=c.pagado===0?"#6b7280":Math.abs(c.sinIdentificar)<Math.max(c.pagado*0.03,2000)?"#4ade80":"#facc15";
+                    return <tr key={c.tarjeta} style={{background:i%2===0?"#1a1d27":"transparent",verticalAlign:"top"}}>
+                      <td style={{borderRadius:"8px 0 0 8px"}}><span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span></td>
+                      <td style={{textAlign:"right",fontWeight:600}}>
+                        {c.pagado>0?fmt(c.pagado):<span style={{color:"#6b7280",fontWeight:400}}>Sin pago</span>}
+                        {c.pagos.some(function(p){return p.autodetectado}) && <div style={{fontSize:11,color:"#6b7280",fontWeight:400}}>detectado por descripción</div>}
+                      </td>
+                      <td style={{textAlign:"right"}}>{fmt(c.cuotas)}</td>
+                      <td style={{fontSize:12}}>
+                        {c.res
+                          ? <div>
+                              <div style={{fontWeight:700,fontSize:13}}>{fmt(c.res.total)}{c.res.totalUSD>0?" + "+fmtUSD(c.res.totalUSD):""}</div>
+                              {TIPOS_ITEM.filter(function(t){return c.porTipo[t]}).map(function(t){return <div key={t} style={{color:"#9ca3af"}}>{TIPO_LABEL[t]}: {fmt(c.porTipo[t])}</div>})}
+                            </div>
+                          : <span style={{color:"#6b7280"}}>Sin cargar</span>}
+                      </td>
+                      <td style={{textAlign:"right",fontWeight:700,color:colorSin}}>{c.pagado>0?fmt(c.sinIdentificar):"—"}</td>
+                      <td style={{textAlign:"center",borderRadius:"0 8px 8px 0",whiteSpace:"nowrap"}}>
+                        {cargando
+                          ? <span style={{fontSize:12,color:"#818cf8"}}>Leyendo PDF…</span>
+                          : <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                              {c.res && <SecondaryBtn onClick={function(){setVerResumen(c.res)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>Ver</SecondaryBtn>}
+                              <SecondaryBtn onClick={function(){subirResumen(c.tarjeta,selMonthTarjeta)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}} disabled={!!extrayendo}>📄 {c.res?"Reemplazar":"Subir"}</SecondaryBtn>
+                            </div>}
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {extrayendo && <div style={{marginTop:10,fontSize:12,color:"#818cf8"}}>Leyendo el resumen de {extrayendo.tarjeta} con IA… puede tardar hasta un minuto.</div>}
+            {pagosSinTarjeta.length>0 && <div style={{marginTop:12,fontSize:12,color:"#facc15"}}>⚠ {pagosSinTarjeta.length} pago(s) de tarjeta sin tarjeta identificada ({pagosSinTarjeta.map(function(p){return p.desc}).join(", ")}). Editalos en Gastos y elegí la tarjeta.</div>}
+            {comprasSinAsignar>0 && <div style={{marginTop:6,fontSize:12,color:"#facc15"}}>⚠ {comprasSinAsignar} compra(s) en cuotas con tarjeta "Sin asignar": no entran en la conciliación hasta que les asignes la tarjeta.</div>}
+          </Card>
 
           {/* Resumen por mes con buscador */}
           <Card style={{marginBottom:20}}>
@@ -1212,6 +1447,11 @@ function App(props){
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Rubro</label><SelectInput value={gRubro} onChange={setGRubro} options={rubros} placeholder="Seleccionar rubro" style={{width:"100%"}}/></div>
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Medio de pago</label><SelectInput value={gMetodo} onChange={setGMetodo} options={PAYMENT_METHODS} style={{width:"100%"}}/></div>
           <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Fecha</label><TextInput type="date" value={gFecha} onChange={setGFecha}/></div>
+          {gRubro===RUBRO_TC && <div>
+            <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>¿Qué tarjeta pagaste?</label>
+            <SelectInput value={gTarjeta} onChange={setGTarjeta} options={tarjetas.filter(function(t){return t.nombre!=="Sin asignar"}).map(function(t){return t.nombre})} placeholder="Seleccionar tarjeta" style={{width:"100%"}}/>
+            {gTarjeta && gFecha && <div style={{fontSize:12,color:"#818cf8",marginTop:4}}>Paga el resumen con cierre en {monthLabel(periodoPagado(gFecha,(tarjetas.find(function(t){return t.nombre===gTarjeta})||{}).cierre||1))}</div>}
+          </div>}
           <PrimaryBtn onClick={saveGasto} disabled={!gDesc||!gMonto||!gRubro} style={{marginTop:8}}>{editGasto?"Guardar cambios":"Registrar gasto"}</PrimaryBtn>
         </div>
       </Modal>
@@ -1300,6 +1540,7 @@ function App(props){
               : <SelectInput value={cTarjeta} onChange={setCTarjeta} options={tarjetas.map(function(t){return t.nombre})} placeholder="Seleccionar tarjeta" style={{width:"100%"}}/>
             }
           </div>
+          <div><label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Rubro</label><SelectInput value={cRubro} onChange={setCRubro} options={rubros} placeholder="Sin rubro" style={{width:"100%"}}/></div>
           <div>
             <label style={{fontSize:12,color:"#6b7280",display:"block",marginBottom:4}}>Cuotas</label>
             <TextInput type="number" value={cCuotas} onChange={setCCuotas} min="1" placeholder="1"/>
@@ -1316,6 +1557,88 @@ function App(props){
           </div>
           <PrimaryBtn onClick={saveCompra} disabled={!cDesc||!cMonto||!cTarjeta} style={{marginTop:8,background:"#818cf8"}}>{editCompra?"Guardar cambios":"Registrar compra"}</PrimaryBtn>
         </div>
+      </Modal>
+
+      {/* Revisión de lo extraído del PDF antes de guardar */}
+      <Modal open={!!revision} wide onClose={function(){if(confirm("¿Descartar lo leído del resumen?"))setRevision(null)}} title={revision?"Revisar resumen — "+revision.tarjeta+" · cierre "+monthLabel(revision.periodo):""}>
+        {revision && function(){
+          var lineas=revision.items.filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"});
+          var sumaLineas=lineas.reduce(function(s,it){return s+it.monto},0);
+          var difTotal=revision.total-sumaLineas;
+          var nuevas=revision.items.filter(function(it){return it.agregarCompra}).length;
+          return <div>
+            <div style={{display:"flex",gap:20,flexWrap:"wrap",fontSize:13,marginBottom:12}}>
+              <div><span style={{color:"#6b7280"}}>Cierre: </span>{revision.cierre}</div>
+              <div><span style={{color:"#6b7280"}}>Vencimiento: </span>{revision.vencimiento}</div>
+              <div><span style={{color:"#6b7280"}}>Total: </span><strong>{fmt(revision.total)}</strong>{revision.totalUSD>0?" + "+fmtUSD(revision.totalUSD):""}</div>
+              <div><span style={{color:"#6b7280"}}>Suma de líneas: </span><strong style={{color:Math.abs(difTotal)<Math.max(revision.total*0.01,500)?"#4ade80":"#facc15"}}>{fmt(sumaLineas)}</strong></div>
+            </div>
+            {Math.abs(difTotal)>=Math.max(revision.total*0.01,500) && <div style={{fontSize:12,color:"#facc15",marginBottom:10}}>⚠ La suma de las líneas no coincide con el total del resumen (diferencia {fmt(difTotal)}). Revisá si falta alguna línea o si hay un pago mal clasificado.</div>}
+            {revision.notas && <div style={{fontSize:12,color:"#9ca3af",marginBottom:10}}>Nota de la IA: {revision.notas}</div>}
+            <div style={{fontSize:12,color:"#6b7280",marginBottom:8}}>Revisá el tipo y el rubro de cada línea. Las cuotas que no están cargadas en la app se pueden agregar a "Todas las compras" marcando la casilla.</div>
+            <div style={{overflowX:"auto",maxHeight:"50vh",overflowY:"auto"}}>
+              <table style={{fontSize:12}}>
+                <thead><tr><th>Fecha</th><th>Descripción</th><th style={{textAlign:"right"}}>Monto</th><th>Tipo</th><th>Rubro</th><th>Cuota</th></tr></thead>
+                <tbody>
+                  {revision.items.map(function(it,i){
+                    return <tr key={it.key} style={{background:i%2===0?"#22252f":"transparent",opacity:it.tipo==="pago"?0.5:1}}>
+                      <td style={{whiteSpace:"nowrap",padding:"6px 8px"}}>{it.fecha}</td>
+                      <td style={{padding:"6px 8px"}}>{it.desc}{it.titular && <div style={{color:"#6b7280"}}>{it.titular}</div>}</td>
+                      <td style={{textAlign:"right",fontWeight:600,whiteSpace:"nowrap",padding:"6px 8px",color:it.monto<0?"#4ade80":"#e8eaed"}}>{it.moneda==="USD"?fmtUSD(it.monto):fmt(it.monto)}</td>
+                      <td style={{padding:"6px 8px"}}><select value={it.tipo} onChange={function(e){updateItemRevision(it.key,"tipo",e.target.value)}} style={{padding:"4px 6px",borderRadius:6,border:"1px solid #2a2d3a",background:"#0f1117",color:"#e8eaed",fontSize:12}}>
+                        {TIPOS_ITEM.map(function(t){return <option key={t} value={t}>{TIPO_LABEL[t]}</option>})}
+                      </select></td>
+                      <td style={{padding:"6px 8px"}}><select value={it.rubro} onChange={function(e){updateItemRevision(it.key,"rubro",e.target.value)}} style={{padding:"4px 6px",borderRadius:6,border:"1px solid #2a2d3a",background:"#0f1117",color:"#e8eaed",fontSize:12,maxWidth:130}}>
+                        {rubros.map(function(r){return <option key={r} value={r}>{r}</option>})}
+                      </select></td>
+                      <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
+                        {it.cuota_numero && it.cuotas_total ? it.cuota_numero+"/"+it.cuotas_total : ""}
+                        {it.compraExistente && <div style={{color:"#4ade80"}}>✓ ya cargada</div>}
+                        {it.tipo==="cuota" && it.cuotas_total>1 && !it.compraExistente && <label style={{display:"flex",alignItems:"center",gap:4,color:"#818cf8",cursor:"pointer"}}>
+                          <input type="checkbox" checked={!!it.agregarCompra} onChange={function(e){updateItemRevision(it.key,"agregarCompra",e.target.checked)}}/> agregar
+                        </label>}
+                      </td>
+                    </tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,flexWrap:"wrap"}}>
+              <SecondaryBtn onClick={function(){setRevision(null)}} style={{borderColor:"#6b7280",color:"#6b7280"}}>Descartar</SecondaryBtn>
+              <PrimaryBtn onClick={guardarRevision} style={{background:"#818cf8"}}>Guardar resumen{nuevas>0?" y agregar "+nuevas+" compra(s)":""}</PrimaryBtn>
+            </div>
+          </div>;
+        }()}
+      </Modal>
+
+      {/* Detalle de un resumen ya conciliado */}
+      <Modal open={!!verResumen} wide onClose={function(){setVerResumen(null)}} title={verResumen?verResumen.tarjeta+" — cierre "+monthLabel(verResumen.periodo):""}>
+        {verResumen && <div>
+          <div style={{display:"flex",gap:20,flexWrap:"wrap",fontSize:13,marginBottom:12}}>
+            <div><span style={{color:"#6b7280"}}>Cierre: </span>{verResumen.cierre}</div>
+            <div><span style={{color:"#6b7280"}}>Vencimiento: </span>{verResumen.vencimiento}</div>
+            <div><span style={{color:"#6b7280"}}>Total: </span><strong>{fmt(verResumen.total)}</strong>{verResumen.totalUSD>0?" + "+fmtUSD(verResumen.totalUSD):""}</div>
+          </div>
+          <div style={{overflowX:"auto",maxHeight:"55vh",overflowY:"auto"}}>
+            <table style={{fontSize:12}}>
+              <thead><tr><th>Fecha</th><th>Descripción</th><th>Tipo</th><th>Rubro</th><th style={{textAlign:"right"}}>Monto</th></tr></thead>
+              <tbody>
+                {(verResumen.items||[]).map(function(it,i){
+                  return <tr key={i} style={{background:i%2===0?"#22252f":"transparent",opacity:it.tipo==="pago"?0.5:1}}>
+                    <td style={{whiteSpace:"nowrap",padding:"6px 8px"}}>{it.fecha}</td>
+                    <td style={{padding:"6px 8px"}}>{it.desc}{it.cuota_numero && it.cuotas_total ? " ("+it.cuota_numero+"/"+it.cuotas_total+")" : ""}</td>
+                    <td style={{padding:"6px 8px"}}>{TIPO_LABEL[it.tipo]||it.tipo}</td>
+                    <td style={{padding:"6px 8px"}}>{it.rubro}</td>
+                    <td style={{textAlign:"right",fontWeight:600,whiteSpace:"nowrap",padding:"6px 8px"}}>{it.moneda==="USD"?fmtUSD(it.monto):fmt(it.monto)}</td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
+            <SecondaryBtn onClick={function(){borrarResumen(verResumen)}} style={{borderColor:"#f87171",color:"#f87171"}}>Eliminar resumen</SecondaryBtn>
+          </div>
+        </div>}
       </Modal>
     </div>
   );
