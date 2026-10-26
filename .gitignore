@@ -1,5 +1,7 @@
 node_modules/
 # Los resúmenes de tarjeta tienen datos personales: nunca subirlos al repo (GitHub Pages los publicaría)
 *.pdf
+# Archivo temporal para cargar la API key: no subir nunca
+clave.txt
 .firebase/
 firebase-debug.log

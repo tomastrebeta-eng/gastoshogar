@@ -39,7 +39,8 @@ Extraé TODAS las líneas que generan el total a pagar y devolvelas en el format
 
 Reglas:
 - tarjeta_detectada: de esta lista, el nombre exacto de la tarjeta a la que corresponde el resumen (según banco, marca y titular): ${tarjetas.join(" | ")}. Si ninguna corresponde, devolvé "".
-- fecha_cierre y fecha_vencimiento en formato AAAA-MM-DD. fecha de cada línea también en AAAA-MM-DD (si el resumen no trae año, deducilo del período).
+- fecha_cierre y fecha_vencimiento en formato AAAA-MM-DD. fecha de cada línea también en AAAA-MM-DD.
+  Hoy es ${new Date().toISOString().slice(0, 10)}: el resumen es reciente, así que si no trae año usá el que haga que el cierre sea la fecha pasada más cercana a hoy. Las compras en cuotas pueden ser de meses anteriores al cierre.
 - total_ars y total_usd: el "saldo actual" / "total a pagar" del resumen en cada moneda (0 si no hay).
 - monto: positivo para cargos, negativo para créditos, bonificaciones o devoluciones.
 - tipo:
@@ -52,6 +53,7 @@ Reglas:
   - "otro": lo que no entre en las anteriores.
 - cuota_numero y cuotas_total en null si no es una cuota.
 - rubro: elegí el más adecuado de esta lista: ${rubros.join(", ")}. Si ninguno encaja, usá "Otros".
+  Si existen en la lista: impuestos, percepciones, intereses y comisiones van a "Impuestos y comisiones"; suscripciones digitales (streaming, apps, IA, Apple, Google) a "Suscripciones"; seguros a "Seguros"; telefonía e internet a "Telefonía / Internet".
 - titular: si el resumen separa consumos por titular o adicional, poné el nombre; si no, null.
 - desc: el nombre del comercio o concepto tal como figura, sin códigos de autorización.
 - No inventes líneas. Si algo no se puede leer, mencionalo en notas.`;

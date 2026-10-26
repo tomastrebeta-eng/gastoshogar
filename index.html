@@ -152,6 +152,28 @@ var detectarTarjeta=function(desc,tarjetas){
   return mejorScore>0&&!empate?mejor:null;
 };
 var resumenId=function(tarjeta,periodo){return normTxt(tarjeta).replace(/[^a-z0-9]+/g,"_")+"_"+periodo};
+var RUBRO_IMPUESTOS="Impuestos y comisiones";
+// Muchos resúmenes no imprimen el año y la IA puede errarle. Un cierre no puede estar en el futuro
+// (más allá de ~45 días) ni tener más de un año: se usa el año más reciente que cumpla eso.
+var corregirAnioResumen=function(r){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(r.fecha_cierre))return {r:r,delta:0};
+  var anio=parseInt(r.fecha_cierre.slice(0,4));
+  var limite=Date.now()+45*864e5;
+  var delta=0;
+  while(new Date((anio+delta)+r.fecha_cierre.slice(4)+"T12:00:00").getTime()>limite)delta--;
+  while(new Date((anio+delta+1)+r.fecha_cierre.slice(4)+"T12:00:00").getTime()<=limite)delta++;
+  if(delta===0)return {r:r,delta:0};
+  var mover=function(s){return /^\d{4}-/.test(s||"")?(parseInt(s.slice(0,4))+delta)+s.slice(4):s};
+  return {delta:delta,r:Object.assign({},r,{fecha_cierre:mover(r.fecha_cierre),fecha_vencimiento:mover(r.fecha_vencimiento),
+    items:r.items.map(function(it){return Object.assign({},it,{fecha:mover(it.fecha)})})})};
+};
+// La parte en dólares del resumen suele pagarse en pesos junto con el resto: lo pagado de más sobre el
+// total en pesos son esos dólares. Devuelve el tipo de cambio implícito si es razonable.
+var tcImplicito=function(res,pagado){
+  if(!res||!(res.totalUSD>0)||!(pagado>res.total))return null;
+  var tc=(pagado-res.total)/res.totalUSD;
+  return tc>=300&&tc<=5000?tc:null;
+};
 var fileToBase64=function(file){
   return new Promise(function(resolve,reject){
     var r=new FileReader();
@@ -653,22 +675,29 @@ function App(props){
   var gastosPorRubro=useMemo(function(){
     var map={};
     var sumar=function(r,v){map[r]=(map[r]||0)+v};
-    gastosMes.forEach(function(g){
-      if(g.rubro!==RUBRO_TC){sumar(g.rubro,g.monto);return}
+    var resumenDePago=function(g){
       var t=g.tarjeta||detectarTarjeta(g.desc,tarjetas);
       var cierre=(tarjetas.find(function(x){return x.nombre===t})||{}).cierre;
       var periodo=g.periodo||(t&&cierre?periodoPagado(g.fecha,cierre):null);
-      var res=t&&periodo?resumenes[resumenId(t,periodo)]:null;
-      var lineas=res?(res.items||[]).filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"&&it.monto>0}):[];
-      var totalLineas=lineas.reduce(function(s,it){return s+it.monto},0);
+      return t&&periodo?resumenId(t,periodo):null;
+    };
+    // Total pagado por resumen (puede haber más de un pago), para estimar el tipo de cambio de la parte en USD
+    var pagadoPorResumen={};
+    gastos.forEach(function(g){if(g.rubro===RUBRO_TC){var id=resumenDePago(g);if(id)pagadoPorResumen[id]=(pagadoPorResumen[id]||0)+g.monto}});
+    gastosMes.forEach(function(g){
+      if(g.rubro!==RUBRO_TC){sumar(g.rubro,g.monto);return}
+      var id=resumenDePago(g);
+      var res=id?resumenes[id]:null;
+      var tc=tcImplicito(res,pagadoPorResumen[id]);
+      var lineas=res?(res.items||[]).filter(function(it){return it.tipo!=="pago"&&it.monto>0&&(it.moneda==="ARS"||tc)}).map(function(it){
+        return {rubro:it.tipo==="impuesto"||it.tipo==="interes"?RUBRO_IMPUESTOS:it.rubro,pesos:it.moneda==="USD"?it.monto*tc:it.monto};
+      }):[];
+      var totalLineas=lineas.reduce(function(s,it){return s+it.pesos},0);
       if(totalLineas<=0){sumar(RUBRO_TC+" (sin detalle)",g.monto);return}
-      lineas.forEach(function(it){
-        var r=it.tipo==="impuesto"||it.tipo==="interes"?"Impuestos e intereses tarjeta":it.rubro;
-        sumar(r,g.monto*it.monto/totalLineas);
-      });
+      lineas.forEach(function(it){sumar(it.rubro,g.monto*it.pesos/totalLineas)});
     });
     return Object.entries(map).sort(function(a,b){return b[1]-a[1]});
-  },[gastosMes,tarjetas,resumenes]);
+  },[gastos,gastosMes,tarjetas,resumenes]);
 
   var gastosPorMetodo=useMemo(function(){
     var map={};
@@ -769,29 +798,46 @@ function App(props){
   };
 
   // Arma la pantalla de revisión a partir de lo que devolvió la IA, para una tarjeta dada
-  var armarRevision=function(r,tarjeta,archivo,periodoDefault){
+  var armarRevision=function(rOriginal,tarjeta,archivo,periodoDefault,sinCorregirAnio){
+    var corr=sinCorregirAnio?{r:rOriginal,delta:0}:corregirAnioResumen(rOriginal);
+    var r=corr.r;
     // El período es el mes de la fecha de cierre impresa en el resumen (si se pudo leer)
     var periodo=/^\d{4}-\d{2}-\d{2}$/.test(r.fecha_cierre)?r.fecha_cierre.slice(0,7):periodoDefault;
+    var usadas={};
     var items=r.items.map(function(it,idx){
-      var match=null;
-      if(it.tipo==="cuota"&&it.cuotas_total>1){
-        match=comprasExpandidas.find(function(c){
-          return c.tarjeta===tarjeta&&c.mes===periodo&&c.cuotasTotal===it.cuotas_total&&c.cuotaNum===it.cuota_numero&&Math.abs(c.monto-it.monto)<=Math.max(it.monto*0.15,1000);
-        })||null;
+      // Busca la compra ya cargada que corresponde a esta cuota. Tolera la 1ª cuota corrida un mes
+      // y las compras cargadas como "Sin asignar", para no duplicarlas.
+      var match=null, mejorScore=-1;
+      if(it.tipo==="cuota"&&it.cuotas_total>1&&it.cuota_numero){
+        compras.forEach(function(c){
+          var cuotas=parseInt(c.cuotas)||1;
+          if(usadas[c.id]||cuotas!==it.cuotas_total)return;
+          if(c.tarjeta!==tarjeta&&c.tarjeta!=="Sin asignar")return;
+          var esperada=monthsBetween(monthKey(c.fecha),periodo)+1;
+          var desfase=it.cuota_numero-esperada;
+          if(Math.abs(desfase)>1||Math.abs(c.monto/cuotas-it.monto)>Math.max(it.monto*0.15,1000))return;
+          var score=(desfase===0?2:0)+(c.tarjeta===tarjeta?1:0);
+          if(score>mejorScore){mejorScore=score;match={id:c.id,desc:c.desc,desfase:desfase,sinAsignar:c.tarjeta==="Sin asignar"}}
+        });
+        if(match)usadas[match.id]=true;
       }
       return Object.assign({},it,{
         key:idx,
         rubro:rubros.indexOf(it.rubro)>=0?it.rubro:"Otros",
-        compraExistente:match?match.desc:null,
+        compraExistente:match,
         agregarCompra:it.tipo==="cuota"&&it.cuotas_total>1&&!match&&it.moneda==="ARS"
       });
     });
     return {tarjeta:tarjeta,periodo:periodo,cierre:r.fecha_cierre,vencimiento:r.fecha_vencimiento,
-      total:r.total_ars,totalUSD:r.total_usd,notas:r.notas,archivo:archivo,items:items,raw:r,periodoDefault:periodoDefault};
+      total:r.total_ars,totalUSD:r.total_usd,notas:r.notas,archivo:archivo,items:items,
+      raw:rOriginal,periodoDefault:periodoDefault,deltaAnio:corr.delta,sinCorregirAnio:!!sinCorregirAnio};
   };
 
   var cambiarTarjetaRevision=function(t){
-    setRevision(function(rev){return armarRevision(rev.raw,t,rev.archivo,rev.periodoDefault)});
+    setRevision(function(rev){return armarRevision(rev.raw,t,rev.archivo,rev.periodoDefault,rev.sinCorregirAnio)});
+  };
+  var revertirAnioRevision=function(){
+    setRevision(function(rev){return armarRevision(rev.raw,rev.tarjeta,rev.archivo,rev.periodoDefault,true)});
   };
 
   var actualizarCola=function(id,cambios){
@@ -830,7 +876,7 @@ function App(props){
     if(revision)return;
     var listo=cola.find(function(x){return x.estado==="listo"});
     if(!listo)return;
-    setRevision(armarRevision(listo.data,listo.tarjeta,listo.archivo,listo.periodoDefault));
+    setRevision(armarRevision(listo.data,listo.tarjeta,listo.archivo,listo.periodoDefault,false));
     setCola(function(c){return c.filter(function(x){return x.id!==listo.id})});
   },[cola,revision]);
 
@@ -862,16 +908,26 @@ function App(props){
       total:r.total,totalUSD:r.totalUSD,archivo:r.archivo,items:items,
       cargado:firebase.firestore.FieldValue.serverTimestamp()
     });
-    // Compras en cuotas que figuran en el resumen pero nunca se cargaron en la app
-    r.items.filter(function(it){return it.agregarCompra}).forEach(function(it){
-      var primerMes=addMonths(r.periodo,-(it.cuota_numero-1));
+    // Fecha de la 1ª cuota según el número de cuota que figura en el resumen
+    var primeraCuota=function(n){
+      var primerMes=addMonths(r.periodo,-(n-1));
       var p=primerMes.split("-");
       var dia=Math.min(cierreTarjeta,lastDayOfMonth(parseInt(p[0]),parseInt(p[1])-1));
+      return primerMes+"-"+String(dia).padStart(2,"0");
+    };
+    // Compras en cuotas que figuran en el resumen pero nunca se cargaron en la app
+    r.items.filter(function(it){return it.agregarCompra}).forEach(function(it){
+      var fecha=primeraCuota(it.cuota_numero);
       batch.set(base.collection("tarjetaCompras").doc(),{
         desc:it.desc,monto:Math.round(it.monto*it.cuotas_total),tarjeta:r.tarjeta,cuotas:it.cuotas_total,
-        fechaCompra:/^\d{4}-\d{2}-\d{2}$/.test(it.fecha)?it.fecha:primerMes+"-01",
-        fecha:primerMes+"-"+String(dia).padStart(2,"0"),rubro:it.rubro,origen:"resumen"
+        fechaCompra:/^\d{4}-\d{2}-\d{2}$/.test(it.fecha)?it.fecha:fecha,
+        fecha:fecha,rubro:it.rubro,origen:"resumen"
       });
+    });
+    // Compras ya cargadas: el resumen manda. Se les asigna la tarjeta si estaban "Sin asignar"
+    // y se corrige la 1ª cuota si estaba corrida un mes.
+    r.items.filter(function(it){return it.compraExistente&&(it.compraExistente.sinAsignar||it.compraExistente.desfase!==0)}).forEach(function(it){
+      batch.update(base.collection("tarjetaCompras").doc(it.compraExistente.id),{tarjeta:r.tarjeta,fecha:primeraCuota(it.cuota_numero)});
     });
     batch.commit().then(function(){setRevision(null)}).catch(function(e){
       console.error("Error guardando resumen:",e);
@@ -1219,10 +1275,11 @@ function App(props){
           var pagado=pagos.reduce(function(s,p){return s+p.monto},0);
           var cuotas=comprasExpandidas.filter(function(c){return c.tarjeta===t.nombre&&c.mes===selMonthTarjeta}).reduce(function(s,c){return s+c.monto},0);
           var res=resumenes[resumenId(t.nombre,selMonthTarjeta)]||null;
+          var tc=tcImplicito(res,pagado);
           var porTipo={};
-          if(res)(res.items||[]).filter(function(it){return it.moneda==="ARS"&&it.tipo!=="pago"}).forEach(function(it){porTipo[it.tipo]=(porTipo[it.tipo]||0)+it.monto});
-          var explicado=res?res.total:cuotas;
-          return {tarjeta:t.nombre,pagos:pagos,pagado:pagado,cuotas:cuotas,res:res,porTipo:porTipo,sinIdentificar:pagado-explicado};
+          if(res)(res.items||[]).filter(function(it){return it.tipo!=="pago"&&(it.moneda==="ARS"||tc)}).forEach(function(it){porTipo[it.tipo]=(porTipo[it.tipo]||0)+(it.moneda==="USD"?it.monto*tc:it.monto)});
+          var explicado=res?res.total+(tc?res.totalUSD*tc:0):cuotas;
+          return {tarjeta:t.nombre,pagos:pagos,pagado:pagado,cuotas:cuotas,res:res,tc:tc,porTipo:porTipo,sinIdentificar:pagado-explicado};
         });
         var pagosSinTarjeta=pagosTarjeta.filter(function(p){return !p.tarjeta});
         var comprasSinAsignar=compras.filter(function(c){return c.tarjeta==="Sin asignar"}).length;
@@ -1286,6 +1343,7 @@ function App(props){
                         {c.res
                           ? <div>
                               <div style={{fontWeight:700,fontSize:13}}>{fmt(c.res.total)}{c.res.totalUSD>0?" + "+fmtUSD(c.res.totalUSD):""}</div>
+                              {c.tc && <div style={{color:"#818cf8"}}>USD pagados en pesos a ≈ {fmt(c.tc)}</div>}
                               {TIPOS_ITEM.filter(function(t){return c.porTipo[t]}).map(function(t){return <div key={t} style={{color:"#9ca3af"}}>{TIPO_LABEL[t]}: {fmt(c.porTipo[t])}</div>})}
                             </div>
                           : <span style={{color:"#6b7280"}}>Sin cargar</span>}
@@ -1637,6 +1695,8 @@ function App(props){
               <div><span style={{color:"#6b7280"}}>Suma de líneas: </span><strong style={{color:Math.abs(difTotal)<Math.max(revision.total*0.01,500)?"#4ade80":"#facc15"}}>{fmt(sumaLineas)}</strong></div>
             </div>
             {Math.abs(difTotal)>=Math.max(revision.total*0.01,500) && <div style={{fontSize:12,color:"#facc15",marginBottom:10}}>⚠ La suma de las líneas no coincide con el total del resumen (diferencia {fmt(difTotal)}). Revisá si falta alguna línea o si hay un pago mal clasificado.</div>}
+            {revision.deltaAnio!==0 && <div style={{fontSize:12,color:"#facc15",marginBottom:10}}>⚠ La IA leyó el año {parseInt(revision.cierre.slice(0,4))-revision.deltaAnio} pero un cierre así no tiene sentido hoy: lo corregí a {revision.cierre.slice(0,4)}. <button onClick={revertirAnioRevision} style={{background:"none",border:"none",color:"#818cf8",cursor:"pointer",textDecoration:"underline",fontSize:12,padding:0}}>Usar el año original</button></div>}
+            {revision.sinCorregirAnio && <div style={{fontSize:12,color:"#facc15",marginBottom:10}}>Usando el año tal como lo leyó la IA.</div>}
             {revision.notas && <div style={{fontSize:12,color:"#9ca3af",marginBottom:10}}>Nota de la IA: {revision.notas}</div>}
             <div style={{fontSize:12,color:"#6b7280",marginBottom:8}}>Revisá el tipo y el rubro de cada línea. Las cuotas que no están cargadas en la app se pueden agregar a "Todas las compras" marcando la casilla.</div>
             <div style={{overflowX:"auto",maxHeight:"50vh",overflowY:"auto"}}>
@@ -1656,7 +1716,9 @@ function App(props){
                       </select></td>
                       <td style={{padding:"6px 8px",whiteSpace:"nowrap"}}>
                         {it.cuota_numero && it.cuotas_total ? it.cuota_numero+"/"+it.cuotas_total : ""}
-                        {it.compraExistente && <div style={{color:"#4ade80"}}>✓ ya cargada</div>}
+                        {it.compraExistente && <div style={{color:"#4ade80"}} title={it.compraExistente.desc}>✓ ya cargada</div>}
+                        {it.compraExistente && it.compraExistente.sinAsignar && <div style={{color:"#818cf8"}}>se le asigna esta tarjeta</div>}
+                        {it.compraExistente && it.compraExistente.desfase!==0 && <div style={{color:"#818cf8"}}>se corrige la 1ª cuota</div>}
                         {it.tipo==="cuota" && it.cuotas_total>1 && !it.compraExistente && <label style={{display:"flex",alignItems:"center",gap:4,color:"#818cf8",cursor:"pointer"}}>
                           <input type="checkbox" checked={!!it.agregarCompra} onChange={function(e){updateItemRevision(it.key,"agregarCompra",e.target.checked)}}/> agregar
                         </label>}
