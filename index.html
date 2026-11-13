@@ -1384,6 +1384,17 @@ function App(props){
                 </tbody>
               </table>
             </div>
+            {function(){
+              // Acceso rápido a los otros meses de cierre que tienen resúmenes cargados
+              var porMes={};
+              Object.values(resumenes).forEach(function(r){if(r.periodo!==selMonthTarjeta)porMes[r.periodo]=(porMes[r.periodo]||0)+1});
+              var meses=Object.keys(porMes).sort().reverse();
+              if(meses.length===0)return null;
+              return <div style={{marginTop:12,fontSize:12,color:"#9ca3af",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                <span>Resúmenes cargados en otros cierres:</span>
+                {meses.map(function(m){return <button key={m} onClick={function(){setSelMonthTarjeta(m)}} style={{background:"#1e1b4b",color:"#818cf8",border:"none",borderRadius:20,padding:"3px 10px",fontSize:12,cursor:"pointer"}}>{monthLabel(m)} ({porMes[m]})</button>})}
+              </div>;
+            }()}
             {pagosSinTarjeta.length>0 && <div style={{marginTop:12,fontSize:12,color:"#facc15"}}>⚠ {pagosSinTarjeta.length} pago(s) de tarjeta sin tarjeta identificada ({pagosSinTarjeta.map(function(p){return p.desc}).join(", ")}). Editalos en Gastos y elegí la tarjeta.</div>}
             {comprasSinAsignar>0 && <div style={{marginTop:6,fontSize:12,color:"#facc15"}}>⚠ {comprasSinAsignar} compra(s) en cuotas con tarjeta "Sin asignar": no entran en la conciliación hasta que les asignes la tarjeta.</div>}
           </Card>
