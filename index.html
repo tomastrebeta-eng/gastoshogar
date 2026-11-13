@@ -371,6 +371,7 @@ function App(props){
   // Resúmenes de tarjeta (conciliación) y revisión de lo extraído del PDF
   var[resumenes,setResumenes]=useState({});
   var[cola,setCola]=useState([]);
+  var[avisoGuardado,setAvisoGuardado]=useState("");
   var[tick,setTick]=useState(0);
   var[revision,setRevision]=useState(null);
   var[verResumen,setVerResumen]=useState(null);
@@ -862,7 +863,13 @@ function App(props){
         return fn({pdf:b64,tarjeta:destino.tarjeta||null,tarjetas:nombresTarjetas,rubros:rubros});
       }).then(function(res){
         var r=res.data;
-        var t=destino.tarjeta||(nombresTarjetas.indexOf(r.tarjeta_detectada)>=0?r.tarjeta_detectada:"");
+        // La IA puede devolver el nombre sin tildes o con otras mayúsculas: se compara normalizado
+        // y, si no coincide, se busca por las palabras del nombre detectado y del archivo.
+        var detectada=normTxt(r.tarjeta_detectada).trim();
+        var t=destino.tarjeta
+          ||nombresTarjetas.find(function(n){return normTxt(n)===detectada})
+          ||detectarTarjeta((r.tarjeta_detectada||"")+" "+file.name,tarjetas.filter(function(x){return x.nombre!=="Sin asignar"}))
+          ||"";
         actualizarCola(id,{estado:"listo",data:r,tarjeta:t,periodoDefault:destino.periodo||selMonthTarjeta});
       }).catch(function(err){
         console.error("extraerResumen error:",err);
@@ -896,16 +903,21 @@ function App(props){
 
   var guardarRevision=function(){
     var r=revision;
+    if(!r||r.guardando)return;
+    if(!r.tarjeta){alert("Elegí de qué tarjeta es el resumen (arriba, en \"Tarjeta\") para poder guardarlo.");return}
+    // Firestore rechaza campos undefined: todo lo que falte se guarda como null
+    var nn=function(v){return v===undefined?null:v};
+    try{
     var cierreTarjeta=(tarjetas.find(function(t){return t.nombre===r.tarjeta})||{}).cierre||1;
     var batch=db.batch();
     var base=db.collection("casabalance").doc("data");
     var items=r.items.map(function(it){
-      return {fecha:it.fecha,desc:it.desc,monto:it.monto,moneda:it.moneda,tipo:it.tipo,rubro:it.rubro,
-        cuota_numero:it.cuota_numero,cuotas_total:it.cuotas_total,titular:it.titular};
+      return {fecha:nn(it.fecha),desc:nn(it.desc),monto:nn(it.monto),moneda:nn(it.moneda),tipo:nn(it.tipo),rubro:nn(it.rubro),
+        cuota_numero:nn(it.cuota_numero),cuotas_total:nn(it.cuotas_total),titular:nn(it.titular)};
     });
     batch.set(base.collection("resumenes").doc(resumenId(r.tarjeta,r.periodo)),{
-      tarjeta:r.tarjeta,periodo:r.periodo,cierre:r.cierre,vencimiento:r.vencimiento,
-      total:r.total,totalUSD:r.totalUSD,archivo:r.archivo,items:items,
+      tarjeta:r.tarjeta,periodo:r.periodo,cierre:nn(r.cierre),vencimiento:nn(r.vencimiento),
+      total:nn(r.total),totalUSD:r.totalUSD||0,archivo:nn(r.archivo),items:items,
       cargado:firebase.firestore.FieldValue.serverTimestamp()
     });
     // Fecha de la 1ª cuota según el número de cuota que figura en el resumen
@@ -929,9 +941,20 @@ function App(props){
     r.items.filter(function(it){return it.compraExistente&&(it.compraExistente.sinAsignar||it.compraExistente.desfase!==0)}).forEach(function(it){
       batch.update(base.collection("tarjetaCompras").doc(it.compraExistente.id),{tarjeta:r.tarjeta,fecha:primeraCuota(it.cuota_numero)});
     });
-    batch.commit().then(function(){setRevision(null)}).catch(function(e){
+    }catch(e){
+      console.error("Error preparando el resumen:",e);
+      alert("No se pudo guardar el resumen: "+e.message);
+      return;
+    }
+    setRevision(function(rev){return Object.assign({},rev,{guardando:true})});
+    batch.commit().then(function(){
+      setAvisoGuardado(r.tarjeta+" — cierre "+monthLabel(r.periodo));
+      setTimeout(function(){setAvisoGuardado("")},5000);
+      setRevision(null);
+    }).catch(function(e){
       console.error("Error guardando resumen:",e);
       alert("No se pudo guardar el resumen: "+e.message);
+      setRevision(function(rev){return rev?Object.assign({},rev,{guardando:false}):rev});
     });
   };
 
@@ -1309,6 +1332,7 @@ function App(props){
             </div>
             <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>Compara lo que pagaste (gastos del rubro "{RUBRO_TC}") con lo que explica cada resumen. Podés elegir varios PDF juntos: se leen al mismo tiempo y la app detecta de qué tarjeta es cada uno.</div>
 
+            {avisoGuardado && <div style={{background:"#0f2a1d",border:"1px solid #4ade80",color:"#4ade80",borderRadius:8,padding:"8px 12px",fontSize:13,marginBottom:10}}>✓ Resumen guardado: {avisoGuardado}</div>}
             {cola.length>0 && <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:14}}>
               {cola.map(function(x){
                 var seg=x.inicio?Math.floor((Date.now()-x.inicio)/1000):0;
@@ -1730,7 +1754,8 @@ function App(props){
             </div>
             <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16,flexWrap:"wrap"}}>
               <SecondaryBtn onClick={function(){setRevision(null)}} style={{borderColor:"#6b7280",color:"#6b7280"}}>Descartar</SecondaryBtn>
-              <PrimaryBtn onClick={guardarRevision} disabled={!revision.tarjeta} style={{background:revision.tarjeta?"#818cf8":undefined}}>Guardar resumen{nuevas>0?" y agregar "+nuevas+" compra(s)":""}</PrimaryBtn>
+              {!revision.tarjeta && <span style={{fontSize:12,color:"#facc15",alignSelf:"center"}}>⚠ Elegí la tarjeta arriba para poder guardar</span>}
+              <PrimaryBtn onClick={guardarRevision} disabled={revision.guardando} style={{background:revision.tarjeta?"#818cf8":"#6b7280"}}>{revision.guardando?"Guardando…":"Guardar resumen"+(nuevas>0?" y agregar "+nuevas+" compra(s)":"")}</PrimaryBtn>
             </div>
           </div>;
         }()}
