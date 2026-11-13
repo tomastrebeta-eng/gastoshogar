@@ -153,6 +153,8 @@ var detectarTarjeta=function(desc,tarjetas){
 };
 var resumenId=function(tarjeta,periodo){return normTxt(tarjeta).replace(/[^a-z0-9]+/g,"_")+"_"+periodo};
 var RUBRO_IMPUESTOS="Impuestos y comisiones";
+// Mes en que se paga un resumen: el de su vencimiento (o el siguiente al cierre si no se leyó)
+var mesDePago=function(r){return /^\d{4}-\d{2}/.test(r.vencimiento||"")?r.vencimiento.slice(0,7):addMonths(r.periodo,1)};
 // Muchos resúmenes no imprimen el año y la IA puede errarle. Un cierre no puede estar en el futuro
 // (más allá de ~45 días) ni tener más de un año: se usa el año más reciente que cumpla eso.
 var corregirAnioResumen=function(r){
@@ -367,6 +369,7 @@ function App(props){
   var[cFechaCompra,setCFechaCompra]=useState(todayStr());
   var[cRubro,setCRubro]=useState("");
   var[selMonthTarjeta,setSelMonthTarjeta]=useState(currentMK);
+  var[selMesPago,setSelMesPago]=useState(currentMK);
 
   // Resúmenes de tarjeta (conciliación) y revisión de lo extraído del PDF
   var[resumenes,setResumenes]=useState({});
@@ -1292,18 +1295,34 @@ function App(props){
         var porTarjetaArr=Object.entries(porTarjetaMap).sort(function(a,b){return b[1]-a[1]});
         var comprasActivas=comprasConEstado.filter(function(c){return c.estado!=="Finalizada"});
 
-        // Conciliación: lo pagado en Gastos vs. lo que explica cada resumen del período
+        // Conciliación: lo pagado en Gastos vs. lo que explica cada resumen.
+        // Se muestra agrupada por mes de pago (vencimiento), pero internamente cada resumen,
+        // sus pagos y sus cuotas se cruzan por el mes de cierre (periodo), como siempre.
+        var periodoParaPago=function(t,mesPago){
+          var r=Object.values(resumenes).find(function(x){return x.tarjeta===t.nombre&&mesDePago(x)===mesPago});
+          if(r)return r.periodo;
+          var p=pagosTarjeta.find(function(x){return x.tarjeta===t.nombre&&x.periodo&&monthKey(x.fecha)===mesPago});
+          if(p)return p.periodo;
+          // Sin datos: el vencimiento cae ~10 días después del cierre
+          return (parseInt(t.cierre)||1)+10>28?addMonths(mesPago,-1):mesPago;
+        };
         var conciliacion=tarjetas.filter(function(t){return t.nombre!=="Sin asignar"}).map(function(t){
-          var pagos=pagosTarjeta.filter(function(p){return p.tarjeta===t.nombre&&p.periodo===selMonthTarjeta});
+          var periodo=periodoParaPago(t,selMesPago);
+          var pagos=pagosTarjeta.filter(function(p){return p.tarjeta===t.nombre&&p.periodo===periodo});
           var pagado=pagos.reduce(function(s,p){return s+p.monto},0);
-          var cuotas=comprasExpandidas.filter(function(c){return c.tarjeta===t.nombre&&c.mes===selMonthTarjeta}).reduce(function(s,c){return s+c.monto},0);
-          var res=resumenes[resumenId(t.nombre,selMonthTarjeta)]||null;
+          var cuotas=comprasExpandidas.filter(function(c){return c.tarjeta===t.nombre&&c.mes===periodo}).reduce(function(s,c){return s+c.monto},0);
+          var res=resumenes[resumenId(t.nombre,periodo)]||null;
           var tc=tcImplicito(res,pagado);
           var porTipo={};
           if(res)(res.items||[]).filter(function(it){return it.tipo!=="pago"&&(it.moneda==="ARS"||tc)}).forEach(function(it){porTipo[it.tipo]=(porTipo[it.tipo]||0)+(it.moneda==="USD"?it.monto*tc:it.monto)});
           var explicado=res?res.total+(tc?res.totalUSD*tc:0):cuotas;
-          return {tarjeta:t.nombre,pagos:pagos,pagado:pagado,cuotas:cuotas,res:res,tc:tc,porTipo:porTipo,sinIdentificar:pagado-explicado};
+          return {tarjeta:t.nombre,periodo:periodo,pagos:pagos,pagado:pagado,cuotas:cuotas,res:res,tc:tc,porTipo:porTipo,sinIdentificar:pagado-explicado};
         });
+        var mesesPago=Array.from(new Set([currentMK].concat(
+          availableMonthsTarjeta.map(function(m){return addMonths(m,1)}),
+          Object.values(resumenes).map(mesDePago),
+          pagosTarjeta.map(function(p){return monthKey(p.fecha)})
+        ))).sort();
         var pagosSinTarjeta=pagosTarjeta.filter(function(p){return !p.tarjeta});
         var comprasSinAsignar=compras.filter(function(c){return c.tarjeta==="Sin asignar"}).length;
 
@@ -1325,10 +1344,10 @@ function App(props){
           {/* Conciliación de resúmenes */}
           <Card style={{marginBottom:20}}>
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:6,flexWrap:"wrap"}}>
-              <h4 style={{margin:0,fontSize:14,color:"#6b7280"}}>Conciliación de resúmenes — cierre de</h4>
-              <SelectInput value={selMonthTarjeta} onChange={setSelMonthTarjeta} options={availableMonthsTarjeta} style={{minWidth:140}}/>
-              <span style={{fontSize:15,fontWeight:700}}>{monthLabel(selMonthTarjeta)}</span>
-              <PrimaryBtn onClick={function(){subirResumen(null,selMonthTarjeta)}} style={{background:"#818cf8",marginLeft:"auto",padding:"8px 16px",fontSize:13}}>📄 Subir resúmenes (PDF)</PrimaryBtn>
+              <h4 style={{margin:0,fontSize:14,color:"#6b7280"}}>Conciliación — resúmenes que pagás en</h4>
+              <SelectInput value={selMesPago} onChange={setSelMesPago} options={mesesPago} style={{minWidth:140}}/>
+              <span style={{fontSize:15,fontWeight:700}}>{monthLabel(selMesPago)}</span>
+              <PrimaryBtn onClick={function(){subirResumen(null,addMonths(selMesPago,-1))}} style={{background:"#818cf8",marginLeft:"auto",padding:"8px 16px",fontSize:13}}>📄 Subir resúmenes (PDF)</PrimaryBtn>
             </div>
             <div style={{fontSize:12,color:"#6b7280",marginBottom:14}}>Compara lo que pagaste (gastos del rubro "{RUBRO_TC}") con lo que explica cada resumen. Podés elegir varios PDF juntos: se leen al mismo tiempo y la app detecta de qué tarjeta es cada uno.</div>
 
@@ -1357,7 +1376,10 @@ function App(props){
                   {conciliacion.map(function(c,i){
                     var colorSin=c.pagado===0?"#6b7280":Math.abs(c.sinIdentificar)<Math.max(c.pagado*0.03,2000)?"#4ade80":"#facc15";
                     return <tr key={c.tarjeta} style={{background:i%2===0?"#1a1d27":"transparent",verticalAlign:"top"}}>
-                      <td style={{borderRadius:"8px 0 0 8px"}}><span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span></td>
+                      <td style={{borderRadius:"8px 0 0 8px"}}>
+                        <span style={{background:"#1e1b4b",color:"#818cf8",padding:"3px 10px",borderRadius:20,fontSize:12,fontWeight:600}}>{c.tarjeta}</span>
+                        <div style={{fontSize:11,color:"#6b7280",marginTop:4}}>resumen con cierre {monthLabel(c.periodo)}</div>
+                      </td>
                       <td style={{textAlign:"right",fontWeight:600}}>
                         {c.pagado>0?fmt(c.pagado):<span style={{color:"#6b7280",fontWeight:400}}>Sin pago</span>}
                         {c.pagos.some(function(p){return p.autodetectado}) && <div style={{fontSize:11,color:"#6b7280",fontWeight:400}}>detectado por descripción</div>}
@@ -1376,7 +1398,7 @@ function App(props){
                       <td style={{textAlign:"center",borderRadius:"0 8px 8px 0",whiteSpace:"nowrap"}}>
                         <div style={{display:"flex",gap:4,justifyContent:"center"}}>
                           {c.res && <SecondaryBtn onClick={function(){setVerResumen(c.res)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>Ver</SecondaryBtn>}
-                          <SecondaryBtn onClick={function(){subirResumen(c.tarjeta,selMonthTarjeta)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>📄 {c.res?"Reemplazar":"Subir"}</SecondaryBtn>
+                          <SecondaryBtn onClick={function(){subirResumen(c.tarjeta,c.periodo)}} style={{padding:"4px 10px",fontSize:12,borderColor:"#818cf8",color:"#818cf8"}}>📄 {c.res?"Reemplazar":"Subir"}</SecondaryBtn>
                         </div>
                       </td>
                     </tr>;
@@ -1385,14 +1407,14 @@ function App(props){
               </table>
             </div>
             {function(){
-              // Acceso rápido a los otros meses de cierre que tienen resúmenes cargados
+              // Acceso rápido a los otros meses de pago que tienen resúmenes cargados
               var porMes={};
-              Object.values(resumenes).forEach(function(r){if(r.periodo!==selMonthTarjeta)porMes[r.periodo]=(porMes[r.periodo]||0)+1});
+              Object.values(resumenes).forEach(function(r){var m=mesDePago(r);if(m!==selMesPago)porMes[m]=(porMes[m]||0)+1});
               var meses=Object.keys(porMes).sort().reverse();
               if(meses.length===0)return null;
               return <div style={{marginTop:12,fontSize:12,color:"#9ca3af",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
-                <span>Resúmenes cargados en otros cierres:</span>
-                {meses.map(function(m){return <button key={m} onClick={function(){setSelMonthTarjeta(m)}} style={{background:"#1e1b4b",color:"#818cf8",border:"none",borderRadius:20,padding:"3px 10px",fontSize:12,cursor:"pointer"}}>{monthLabel(m)} ({porMes[m]})</button>})}
+                <span>Resúmenes cargados que se pagan en otros meses:</span>
+                {meses.map(function(m){return <button key={m} onClick={function(){setSelMesPago(m)}} style={{background:"#1e1b4b",color:"#818cf8",border:"none",borderRadius:20,padding:"3px 10px",fontSize:12,cursor:"pointer"}}>{monthLabel(m)} ({porMes[m]})</button>})}
               </div>;
             }()}
             {pagosSinTarjeta.length>0 && <div style={{marginTop:12,fontSize:12,color:"#facc15"}}>⚠ {pagosSinTarjeta.length} pago(s) de tarjeta sin tarjeta identificada ({pagosSinTarjeta.map(function(p){return p.desc}).join(", ")}). Editalos en Gastos y elegí la tarjeta.</div>}
